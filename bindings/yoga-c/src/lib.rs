@@ -1365,28 +1365,67 @@ pub extern "C" fn YGNodeCalculateLayout(
                     continue;
                 }
 
-                let start = n
-                    .position_edges
-                    .get_exact(YG_EDGE_START)
-                    .and_then(|v| v.resolve_to_option(owner_width, |_ptr, _ctx| 0.0));
-                let left = n
-                    .position_edges
-                    .get_exact(YG_EDGE_LEFT)
-                    .and_then(|v| v.resolve_to_option(owner_width, |_ptr, _ctx| 0.0));
-                let right = n
-                    .position_edges
-                    .get_exact(YG_EDGE_RIGHT)
-                    .and_then(|v| v.resolve_to_option(owner_width, |_ptr, _ctx| 0.0));
-                let end = n
-                    .position_edges
-                    .get_exact(YG_EDGE_END)
-                    .and_then(|v| v.resolve_to_option(owner_width, |_ptr, _ctx| 0.0));
+                let start_raw = n.position_edges.get_exact(YG_EDGE_START);
+                let end_raw = n.position_edges.get_exact(YG_EDGE_END);
+                let left_raw = n.position_edges.get_exact(YG_EDGE_LEFT);
+                let right_raw = n.position_edges.get_exact(YG_EDGE_RIGHT);
+
+                let start = start_raw.and_then(|v| v.resolve_to_option(owner_width, |_ptr, _ctx| 0.0));
+                let end = end_raw.and_then(|v| v.resolve_to_option(owner_width, |_ptr, _ctx| 0.0));
+                let left = left_raw.and_then(|v| v.resolve_to_option(owner_width, |_ptr, _ctx| 0.0));
+                let right = right_raw.and_then(|v| v.resolve_to_option(owner_width, |_ptr, _ctx| 0.0));
 
                 // Yoga absolute-positioning in RTL defaults to inline-start (right side) when
                 // horizontal insets are all auto, and prioritizes `start` with definite width.
                 let x = if let Some(start_inset) = start {
                     owner_width - width - start_inset
-                } else if left.is_none() && right.is_none() && end.is_none() {
+                } else if start_raw.is_none()
+                    && end_raw.is_none()
+                    && left_raw.is_none()
+                    && right_raw.is_none()
+                {
+                    let owner = &*n.owner;
+                    let mut owner_flex_direction = owner.style.flex_direction;
+                    if owner.layout.direction == YG_DIRECTION_RTL {
+                        owner_flex_direction = match owner_flex_direction {
+                            FlexDirection::Row => FlexDirection::RowReverse,
+                            FlexDirection::RowReverse => FlexDirection::Row,
+                            other => other,
+                        };
+                    }
+
+                    let start_like_horizontal_alignment = if matches!(
+                        owner_flex_direction,
+                        FlexDirection::Column | FlexDirection::ColumnReverse
+                    ) {
+                        let effective_align_self = n.style.align_self.or(owner.style.align_items);
+                        matches!(
+                            effective_align_self,
+                            None
+                                | Some(AlignItems::Stretch)
+                                | Some(AlignItems::FlexStart)
+                                | Some(AlignItems::Start)
+                        )
+                    } else {
+                        matches!(
+                            owner.style.justify_content,
+                            None | Some(JustifyContent::FlexStart) | Some(JustifyContent::Start)
+                        )
+                    };
+
+                    if start_like_horizontal_alignment {
+                        owner_width - width
+                    } else {
+                        continue;
+                    }
+                } else if start_raw.is_none()
+                    && end_raw.is_none()
+                    && matches!(left_raw, Some(v) if v.is_auto())
+                    && matches!(right_raw, Some(v) if v.is_auto())
+                    && left.is_none()
+                    && right.is_none()
+                    && end.is_none()
+                {
                     owner_width - width
                 } else {
                     continue;
