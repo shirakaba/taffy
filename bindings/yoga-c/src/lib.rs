@@ -371,6 +371,38 @@ fn unmap_align(value: Option<AlignItems>, auto: bool) -> i32 {
     }
 }
 
+fn map_justify_items(justify: i32) -> Option<AlignItems> {
+    match justify {
+        YG_JUSTIFY_AUTO => None,
+        YG_JUSTIFY_FLEX_START => Some(AlignItems::FlexStart),
+        YG_JUSTIFY_CENTER => Some(AlignItems::Center),
+        YG_JUSTIFY_FLEX_END => Some(AlignItems::FlexEnd),
+        YG_JUSTIFY_STRETCH => Some(AlignItems::Stretch),
+        YG_JUSTIFY_START => Some(AlignItems::Start),
+        YG_JUSTIFY_END => Some(AlignItems::End),
+        _ => None,
+    }
+}
+
+fn unmap_justify_items(value: Option<AlignItems>, auto: bool) -> i32 {
+    match value {
+        None => {
+            if auto {
+                YG_JUSTIFY_AUTO
+            } else {
+                YG_JUSTIFY_STRETCH
+            }
+        }
+        Some(AlignItems::FlexStart) => YG_JUSTIFY_FLEX_START,
+        Some(AlignItems::Center) => YG_JUSTIFY_CENTER,
+        Some(AlignItems::FlexEnd) => YG_JUSTIFY_FLEX_END,
+        Some(AlignItems::Stretch) => YG_JUSTIFY_STRETCH,
+        Some(AlignItems::Start) => YG_JUSTIFY_START,
+        Some(AlignItems::End) => YG_JUSTIFY_END,
+        Some(AlignItems::Baseline) => YG_JUSTIFY_AUTO,
+    }
+}
+
 fn map_align_content(align: i32) -> Option<AlignContent> {
     match align {
         YG_ALIGN_AUTO => None,
@@ -1487,22 +1519,55 @@ pub extern "C" fn YGNodeCalculateLayout(
                     (owner_height - owner_border.top - owner_border.bottom - owner_padding.top - owner_padding.bottom).max(0.0);
                 let containing_padding_box_width = (owner_width - owner_border.left - owner_border.right).max(0.0);
                 let containing_padding_box_height = (owner_height - owner_border.top - owner_border.bottom).max(0.0);
-                let inset_resolve_width = if use_static_cb_compat {
+                let containing_is_grid = containing.display_mode == YG_DISPLAY_GRID;
+                let non_static_origin_left = if containing_is_grid { owner_border.left } else { content_left };
+                let non_static_origin_top = if containing_is_grid { owner_border.top } else { content_top };
+                let non_static_available_width = if containing_is_grid {
                     containing_padding_box_width
                 } else {
                     content_width
                 };
-                let inset_resolve_height = if use_static_cb_compat {
+                let non_static_available_height = if containing_is_grid {
                     containing_padding_box_height
                 } else {
                     content_height
                 };
-                let margin_resolve_width = if use_static_cb_compat {
+                let abs_origin_left = if use_static_cb_compat {
+                    content_left
+                } else {
+                    non_static_origin_left
+                };
+                let abs_origin_top = if use_static_cb_compat {
+                    content_top
+                } else {
+                    non_static_origin_top
+                };
+                let abs_available_width = if use_static_cb_compat {
+                    content_width
+                } else {
+                    non_static_available_width
+                };
+                let abs_available_height = if use_static_cb_compat {
+                    content_height
+                } else {
+                    non_static_available_height
+                };
+                let inset_resolve_width = if use_static_cb_compat || containing_is_grid {
                     containing_padding_box_width
                 } else {
                     content_width
                 };
-                let margin_resolve_height = if use_static_cb_compat {
+                let inset_resolve_height = if use_static_cb_compat || containing_is_grid {
+                    containing_padding_box_height
+                } else {
+                    content_height
+                };
+                let margin_resolve_width = if use_static_cb_compat || containing_is_grid {
+                    containing_padding_box_width
+                } else {
+                    content_width
+                };
+                let margin_resolve_height = if use_static_cb_compat || containing_is_grid {
                     containing_padding_box_height
                 } else {
                     content_height
@@ -1686,12 +1751,23 @@ pub extern "C" fn YGNodeCalculateLayout(
                 let owner_space_offset_x = containing_global_x - direct_owner_global_x;
                 let owner_space_offset_y = containing_global_y - direct_owner_global_y;
 
+                let direct_owner_is_grid = direct_owner.display_mode == YG_DISPLAY_GRID;
                 let owner_flex_direction = direct_owner.style.flex_direction;
-                let main_axis_is_row =
-                    matches!(owner_flex_direction, FlexDirection::Row | FlexDirection::RowReverse);
-                let main_axis_is_reverse =
-                    matches!(owner_flex_direction, FlexDirection::RowReverse | FlexDirection::ColumnReverse);
-                let cross_axis_is_reverse = matches!(direct_owner.style.flex_wrap, FlexWrap::WrapReverse);
+                let main_axis_is_row = if direct_owner_is_grid {
+                    true
+                } else {
+                    matches!(owner_flex_direction, FlexDirection::Row | FlexDirection::RowReverse)
+                };
+                let main_axis_is_reverse = if direct_owner_is_grid {
+                    false
+                } else {
+                    matches!(owner_flex_direction, FlexDirection::RowReverse | FlexDirection::ColumnReverse)
+                };
+                let cross_axis_is_reverse = if direct_owner_is_grid {
+                    false
+                } else {
+                    matches!(direct_owner.style.flex_wrap, FlexWrap::WrapReverse)
+                };
 
                 #[derive(Copy, Clone)]
                 enum YogaAxisAlign {
@@ -1708,10 +1784,18 @@ pub extern "C" fn YGNodeCalculateLayout(
                     }
                 }
 
-                let main_align = match direct_owner.style.justify_content {
-                    Some(JustifyContent::Center) => YogaAxisAlign::Center,
-                    Some(JustifyContent::FlexEnd) | Some(JustifyContent::End) => YogaAxisAlign::End,
-                    _ => YogaAxisAlign::Start,
+                let main_align = if direct_owner_is_grid {
+                    match n.style.justify_self.or(direct_owner.style.justify_items) {
+                        Some(AlignItems::Center) => YogaAxisAlign::Center,
+                        Some(AlignItems::FlexEnd) | Some(AlignItems::End) => YogaAxisAlign::End,
+                        _ => YogaAxisAlign::Start,
+                    }
+                } else {
+                    match direct_owner.style.justify_content {
+                        Some(JustifyContent::Center) => YogaAxisAlign::Center,
+                        Some(JustifyContent::FlexEnd) | Some(JustifyContent::End) => YogaAxisAlign::End,
+                        _ => YogaAxisAlign::Start,
+                    }
                 };
                 let cross_align = match n.style.align_self.or(direct_owner.style.align_items) {
                     Some(AlignItems::Center) => YogaAxisAlign::Center,
@@ -1813,9 +1897,9 @@ pub extern "C" fn YGNodeCalculateLayout(
                 if let Some(start_inset) = start {
                     // `start` wins over `end` for RTL with definite width (Yoga behavior).
                     let mut x = if n.layout.direction == YG_DIRECTION_RTL {
-                        content_left + content_width - width - start_inset
+                        abs_origin_left + abs_available_width - width - start_inset
                     } else {
-                        content_left + start_inset
+                        abs_origin_left + start_inset
                     } + owner_space_offset_x;
                     if use_static_cb_compat && direct_owner_has_horizontal_decoration {
                         x += content_left;
@@ -1829,27 +1913,14 @@ pub extern "C" fn YGNodeCalculateLayout(
                     && right.is_some()
                 {
                     // Yoga favors the physical right inset for this RTL left+right absolute case.
-                    let mut x =
-                        content_left + content_width - width - right.unwrap_or(0.0) - n.layout.final_layout.margin.right
+                    let x =
+                        abs_origin_left + abs_available_width - width - right.unwrap_or(0.0) - n.layout.final_layout.margin.right
                             + owner_space_offset_x;
-                    if use_static_cb_compat && direct_owner_has_horizontal_decoration {
-                        let pre_owner_global_x = pre_mirror_globals
-                            .iter()
-                            .find(|(p, _)| *p == n.owner)
-                            .map(|(_, pos)| pos.0)
-                            .unwrap_or(direct_owner_global_x);
-                        let pre_containing_global_x = pre_mirror_globals
-                            .iter()
-                            .find(|(p, _)| *p == containing_ptr)
-                            .map(|(_, pos)| pos.0)
-                            .unwrap_or(containing_global_x);
-                        x += pre_owner_global_x - pre_containing_global_x;
-                    }
                     n.layout.unrounded_layout.location.x = x;
                     n.layout.final_layout.location.x = x;
                 } else if use_static_cb_compat && left.is_some() {
                     let left_inset = left.unwrap_or(0.0);
-                    let mut x = content_left + left_inset + owner_space_offset_x;
+                    let mut x = abs_origin_left + left_inset + owner_space_offset_x;
                     if direct_owner_has_horizontal_decoration {
                         x += content_left;
                     }
@@ -1858,9 +1929,9 @@ pub extern "C" fn YGNodeCalculateLayout(
                 } else if use_static_cb_compat && end.is_some() {
                     let end_inset = end.unwrap_or(0.0);
                     let mut x = if n.layout.direction == YG_DIRECTION_RTL {
-                        content_left + end_inset
+                        abs_origin_left + end_inset
                     } else {
-                        content_left + content_width - width - end_inset
+                        abs_origin_left + abs_available_width - width - end_inset
                     } + owner_space_offset_x;
                     if direct_owner_has_horizontal_decoration {
                         x += content_left;
@@ -1869,7 +1940,7 @@ pub extern "C" fn YGNodeCalculateLayout(
                     n.layout.final_layout.location.x = x;
                 } else if use_static_cb_compat && right.is_some() {
                     let right_inset = right.unwrap_or(0.0);
-                    let mut x = content_left + content_width - width - right_inset + owner_space_offset_x;
+                    let mut x = abs_origin_left + abs_available_width - width - right_inset + owner_space_offset_x;
                     if direct_owner_has_horizontal_decoration {
                         x += content_left;
                     }
@@ -1880,11 +1951,11 @@ pub extern "C" fn YGNodeCalculateLayout(
                         && use_containing_for_auto_axes
                         && !prefer_direct_owner_auto_x
                     {
-                        (content_left, content_width, owner_space_offset_x)
+                        (abs_origin_left, abs_available_width, owner_space_offset_x)
                     } else if use_static_cb_compat {
                         (direct_content_left, direct_content_width, 0.0)
                     } else {
-                        (content_left, content_width, owner_space_offset_x)
+                        (abs_origin_left, abs_available_width, owner_space_offset_x)
                     };
                     let x_logical_start_is_low = n.layout.direction != YG_DIRECTION_RTL;
                     let x_margin_start = if x_logical_start_is_low {
@@ -1912,12 +1983,12 @@ pub extern "C" fn YGNodeCalculateLayout(
 
                 if use_static_cb_compat && top.is_some() {
                     let top_inset = top.unwrap_or(0.0);
-                    let y = content_top + top_inset + owner_space_offset_y;
+                    let y = abs_origin_top + top_inset + owner_space_offset_y;
                     n.layout.unrounded_layout.location.y = y;
                     n.layout.final_layout.location.y = y;
                 } else if use_static_cb_compat && bottom.is_some() {
                     let bottom_inset = bottom.unwrap_or(0.0);
-                    let y = content_top + content_height - height - bottom_inset + owner_space_offset_y;
+                    let y = abs_origin_top + abs_available_height - height - bottom_inset + owner_space_offset_y;
                     n.layout.unrounded_layout.location.y = y;
                     n.layout.final_layout.location.y = y;
                 } else if !has_vertical_non_auto {
@@ -1926,11 +1997,11 @@ pub extern "C" fn YGNodeCalculateLayout(
                         && use_containing_for_auto_y
                         && !prefer_direct_owner_auto_y
                     {
-                        (content_top, content_height, owner_space_offset_y)
+                        (abs_origin_top, abs_available_height, owner_space_offset_y)
                     } else if use_static_cb_compat {
                         (direct_content_top, direct_content_height, 0.0)
                     } else {
-                        (content_top, content_height, owner_space_offset_y)
+                        (abs_origin_top, abs_available_height, owner_space_offset_y)
                     };
                     let y = place_on_axis(
                         align_origin_y,
@@ -2124,6 +2195,56 @@ pub extern "C" fn YGNodeCalculateLayout(
 
                 n.layout.unrounded_layout.location.x = new_x;
                 n.layout.final_layout.location.x = new_x;
+            }
+        }
+
+        for (node_ptr, _id) in mapping.iter().copied() {
+            unsafe {
+                let n = &mut *node_ptr;
+                if n.owner.is_null() || n.display_mode == YG_DISPLAY_NONE || n.style.position == Position::Absolute {
+                    continue;
+                }
+
+                let owner = &*n.owner;
+                if owner.display_mode != YG_DISPLAY_GRID || owner.layout.direction != YG_DIRECTION_RTL {
+                    continue;
+                }
+                let has_non_auto_logical_inset = [YG_EDGE_START, YG_EDGE_END].iter().any(|edge| {
+                    n.position_edges
+                        .get_exact(*edge)
+                        .map(|v| lpa_to_yg_value(v).unit != YG_UNIT_AUTO)
+                        .unwrap_or(false)
+                });
+                if has_non_auto_logical_inset {
+                    continue;
+                }
+
+                let left = n.position_edges.get_exact(YG_EDGE_LEFT);
+                let right = n.position_edges.get_exact(YG_EDGE_RIGHT);
+                let left_is_non_auto = left
+                    .map(|v| lpa_to_yg_value(v).unit != YG_UNIT_AUTO)
+                    .unwrap_or(false);
+                let right_is_non_auto = right
+                    .map(|v| lpa_to_yg_value(v).unit != YG_UNIT_AUTO)
+                    .unwrap_or(false);
+                if !left_is_non_auto || !right_is_non_auto {
+                    continue;
+                }
+
+                let owner_width = owner.layout.unrounded_layout.size.width;
+                let width = n.layout.unrounded_layout.size.width;
+                if !owner_width.is_finite() || !width.is_finite() {
+                    continue;
+                }
+
+                let right_offset = right.and_then(|v| v.resolve_to_option(owner_width, |_ptr, _ctx| 0.0));
+                let Some(right_offset) = right_offset else {
+                    continue;
+                };
+
+                let x = owner_width - right_offset - width;
+                n.layout.unrounded_layout.location.x = x;
+                n.layout.final_layout.location.x = x;
             }
         }
 
@@ -2763,7 +2884,7 @@ pub extern "C" fn YGNodeStyleGetJustifyContent(node: *const YGNode) -> i32 {
 pub extern "C" fn YGNodeStyleSetJustifyItems(node: *mut YGNode, justify_items: i32) {
     unsafe {
         if let Some(n) = node.as_mut() {
-            n.style.justify_items = map_align(justify_items);
+            n.style.justify_items = map_justify_items(justify_items);
             mark_dirty(node);
         }
     }
@@ -2773,8 +2894,8 @@ pub extern "C" fn YGNodeStyleSetJustifyItems(node: *mut YGNode, justify_items: i
 pub extern "C" fn YGNodeStyleGetJustifyItems(node: *const YGNode) -> i32 {
     unsafe {
         node.as_ref()
-            .map(|n| unmap_align(n.style.justify_items, true))
-            .unwrap_or(YG_ALIGN_AUTO)
+            .map(|n| unmap_justify_items(n.style.justify_items, true))
+            .unwrap_or(YG_JUSTIFY_AUTO)
     }
 }
 
@@ -2782,7 +2903,7 @@ pub extern "C" fn YGNodeStyleGetJustifyItems(node: *const YGNode) -> i32 {
 pub extern "C" fn YGNodeStyleSetJustifySelf(node: *mut YGNode, justify_self: i32) {
     unsafe {
         if let Some(n) = node.as_mut() {
-            n.style.justify_self = map_align(justify_self);
+            n.style.justify_self = map_justify_items(justify_self);
             mark_dirty(node);
         }
     }
@@ -2792,8 +2913,8 @@ pub extern "C" fn YGNodeStyleSetJustifySelf(node: *mut YGNode, justify_self: i32
 pub extern "C" fn YGNodeStyleGetJustifySelf(node: *const YGNode) -> i32 {
     unsafe {
         node.as_ref()
-            .map(|n| unmap_align(n.style.justify_self, true))
-            .unwrap_or(YG_ALIGN_AUTO)
+            .map(|n| unmap_justify_items(n.style.justify_self, true))
+            .unwrap_or(YG_JUSTIFY_AUTO)
     }
 }
 
