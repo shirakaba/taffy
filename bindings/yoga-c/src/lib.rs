@@ -1,6 +1,7 @@
 #![allow(clippy::missing_safety_doc)]
 
 use std::ffi::c_void;
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::ptr;
 use std::sync::OnceLock;
 
@@ -176,6 +177,10 @@ struct YGNode {
     flex: Option<f32>,
     has_flex_grow: bool,
     has_flex_shrink: bool,
+    position_edges: YogaEdgeValuesLpa,
+    margin_edges: YogaEdgeValuesLpa,
+    padding_edges: YogaEdgeValuesLp,
+    border_edges: YogaEdgeValuesLp,
     layout: YGLayout,
 }
 
@@ -196,6 +201,66 @@ struct YGGridTrackList {
 enum YGGridTrackValue {
     Single(TrackSizingFunction),
     MinMax(MinTrackSizingFunction, MaxTrackSizingFunction),
+}
+
+const YOGA_EDGE_COUNT: usize = 9;
+
+#[derive(Clone)]
+struct YogaEdgeValuesLpa {
+    values: [Option<LengthPercentageAuto>; YOGA_EDGE_COUNT],
+}
+
+impl Default for YogaEdgeValuesLpa {
+    fn default() -> Self {
+        Self {
+            values: [None; YOGA_EDGE_COUNT],
+        }
+    }
+}
+
+impl YogaEdgeValuesLpa {
+    fn set(&mut self, edge: i32, value: LengthPercentageAuto) {
+        if (0..YOGA_EDGE_COUNT as i32).contains(&edge) {
+            self.values[edge as usize] = Some(value);
+        }
+    }
+
+    fn get_exact(&self, edge: i32) -> Option<LengthPercentageAuto> {
+        if (0..YOGA_EDGE_COUNT as i32).contains(&edge) {
+            self.values[edge as usize]
+        } else {
+            None
+        }
+    }
+}
+
+#[derive(Clone)]
+struct YogaEdgeValuesLp {
+    values: [Option<LengthPercentage>; YOGA_EDGE_COUNT],
+}
+
+impl Default for YogaEdgeValuesLp {
+    fn default() -> Self {
+        Self {
+            values: [None; YOGA_EDGE_COUNT],
+        }
+    }
+}
+
+impl YogaEdgeValuesLp {
+    fn set(&mut self, edge: i32, value: LengthPercentage) {
+        if (0..YOGA_EDGE_COUNT as i32).contains(&edge) {
+            self.values[edge as usize] = Some(value);
+        }
+    }
+
+    fn get_exact(&self, edge: i32) -> Option<LengthPercentage> {
+        if (0..YOGA_EDGE_COUNT as i32).contains(&edge) {
+            self.values[edge as usize]
+        } else {
+            None
+        }
+    }
 }
 
 fn config_default() -> *mut YGConfig {
@@ -302,6 +367,26 @@ fn unmap_align(value: Option<AlignItems>, auto: bool) -> i32 {
         Some(AlignItems::Start) => YG_ALIGN_START,
         Some(AlignItems::End) => YG_ALIGN_END,
     }
+}
+
+fn flip_align_items_for_rtl(value: Option<AlignItems>) -> Option<AlignItems> {
+    value.map(|v| match v {
+        AlignItems::Start => AlignItems::End,
+        AlignItems::End => AlignItems::Start,
+        AlignItems::FlexStart => AlignItems::FlexEnd,
+        AlignItems::FlexEnd => AlignItems::FlexStart,
+        _ => v,
+    })
+}
+
+fn flip_align_content_for_rtl(value: Option<AlignContent>) -> Option<AlignContent> {
+    value.map(|v| match v {
+        AlignContent::Start => AlignContent::End,
+        AlignContent::End => AlignContent::Start,
+        AlignContent::FlexStart => AlignContent::FlexEnd,
+        AlignContent::FlexEnd => AlignContent::FlexStart,
+        _ => v,
+    })
 }
 
 fn map_justify(justify: i32) -> Option<JustifyContent> {
@@ -558,6 +643,139 @@ fn get_lp(rect: &Rect<LengthPercentage>, edge: i32, direction: i32) -> LengthPer
     }
 }
 
+fn choose_lpa(
+    edges: &YogaEdgeValuesLpa,
+    physical_edge: i32,
+    direction: i32,
+    fallback: LengthPercentageAuto,
+) -> LengthPercentageAuto {
+    match physical_edge {
+        YG_EDGE_LEFT => {
+            if direction == YG_DIRECTION_LTR {
+                if let Some(v) = edges.get_exact(YG_EDGE_START) {
+                    return v;
+                }
+            } else if direction == YG_DIRECTION_RTL {
+                if let Some(v) = edges.get_exact(YG_EDGE_END) {
+                    return v;
+                }
+            }
+            edges
+                .get_exact(YG_EDGE_LEFT)
+                .or_else(|| edges.get_exact(YG_EDGE_HORIZONTAL))
+                .or_else(|| edges.get_exact(YG_EDGE_ALL))
+                .unwrap_or(fallback)
+        }
+        YG_EDGE_RIGHT => {
+            if direction == YG_DIRECTION_LTR {
+                if let Some(v) = edges.get_exact(YG_EDGE_END) {
+                    return v;
+                }
+            } else if direction == YG_DIRECTION_RTL {
+                if let Some(v) = edges.get_exact(YG_EDGE_START) {
+                    return v;
+                }
+            }
+            edges
+                .get_exact(YG_EDGE_RIGHT)
+                .or_else(|| edges.get_exact(YG_EDGE_HORIZONTAL))
+                .or_else(|| edges.get_exact(YG_EDGE_ALL))
+                .unwrap_or(fallback)
+        }
+        YG_EDGE_TOP => edges
+            .get_exact(YG_EDGE_TOP)
+            .or_else(|| edges.get_exact(YG_EDGE_VERTICAL))
+            .or_else(|| edges.get_exact(YG_EDGE_ALL))
+            .unwrap_or(fallback),
+        YG_EDGE_BOTTOM => edges
+            .get_exact(YG_EDGE_BOTTOM)
+            .or_else(|| edges.get_exact(YG_EDGE_VERTICAL))
+            .or_else(|| edges.get_exact(YG_EDGE_ALL))
+            .unwrap_or(fallback),
+        _ => fallback,
+    }
+}
+
+fn choose_lp(
+    edges: &YogaEdgeValuesLp,
+    physical_edge: i32,
+    direction: i32,
+    fallback: LengthPercentage,
+) -> LengthPercentage {
+    match physical_edge {
+        YG_EDGE_LEFT => {
+            if direction == YG_DIRECTION_LTR {
+                if let Some(v) = edges.get_exact(YG_EDGE_START) {
+                    return v;
+                }
+            } else if direction == YG_DIRECTION_RTL {
+                if let Some(v) = edges.get_exact(YG_EDGE_END) {
+                    return v;
+                }
+            }
+            edges
+                .get_exact(YG_EDGE_LEFT)
+                .or_else(|| edges.get_exact(YG_EDGE_HORIZONTAL))
+                .or_else(|| edges.get_exact(YG_EDGE_ALL))
+                .unwrap_or(fallback)
+        }
+        YG_EDGE_RIGHT => {
+            if direction == YG_DIRECTION_LTR {
+                if let Some(v) = edges.get_exact(YG_EDGE_END) {
+                    return v;
+                }
+            } else if direction == YG_DIRECTION_RTL {
+                if let Some(v) = edges.get_exact(YG_EDGE_START) {
+                    return v;
+                }
+            }
+            edges
+                .get_exact(YG_EDGE_RIGHT)
+                .or_else(|| edges.get_exact(YG_EDGE_HORIZONTAL))
+                .or_else(|| edges.get_exact(YG_EDGE_ALL))
+                .unwrap_or(fallback)
+        }
+        YG_EDGE_TOP => edges
+            .get_exact(YG_EDGE_TOP)
+            .or_else(|| edges.get_exact(YG_EDGE_VERTICAL))
+            .or_else(|| edges.get_exact(YG_EDGE_ALL))
+            .unwrap_or(fallback),
+        YG_EDGE_BOTTOM => edges
+            .get_exact(YG_EDGE_BOTTOM)
+            .or_else(|| edges.get_exact(YG_EDGE_VERTICAL))
+            .or_else(|| edges.get_exact(YG_EDGE_ALL))
+            .unwrap_or(fallback),
+        _ => fallback,
+    }
+}
+
+fn resolve_inset_rect(edges: &YogaEdgeValuesLpa, direction: i32) -> Rect<LengthPercentageAuto> {
+    Rect {
+        left: choose_lpa(edges, YG_EDGE_LEFT, direction, LengthPercentageAuto::auto()),
+        top: choose_lpa(edges, YG_EDGE_TOP, direction, LengthPercentageAuto::auto()),
+        right: choose_lpa(edges, YG_EDGE_RIGHT, direction, LengthPercentageAuto::auto()),
+        bottom: choose_lpa(edges, YG_EDGE_BOTTOM, direction, LengthPercentageAuto::auto()),
+    }
+}
+
+fn resolve_margin_rect(edges: &YogaEdgeValuesLpa, direction: i32) -> Rect<LengthPercentageAuto> {
+    Rect {
+        left: choose_lpa(edges, YG_EDGE_LEFT, direction, LengthPercentageAuto::length(0.0)),
+        top: choose_lpa(edges, YG_EDGE_TOP, direction, LengthPercentageAuto::length(0.0)),
+        right: choose_lpa(edges, YG_EDGE_RIGHT, direction, LengthPercentageAuto::length(0.0)),
+        bottom: choose_lpa(edges, YG_EDGE_BOTTOM, direction, LengthPercentageAuto::length(0.0)),
+    }
+}
+
+fn resolve_lp_rect(edges: &YogaEdgeValuesLp, direction: i32) -> Rect<LengthPercentage> {
+    Rect {
+        left: choose_lp(edges, YG_EDGE_LEFT, direction, LengthPercentage::length(0.0)),
+        top: choose_lp(edges, YG_EDGE_TOP, direction, LengthPercentage::length(0.0)),
+        right: choose_lp(edges, YG_EDGE_RIGHT, direction, LengthPercentage::length(0.0)),
+        bottom: choose_lp(edges, YG_EDGE_BOTTOM, direction, LengthPercentage::length(0.0)),
+    }
+}
+
 fn compact_to_yg_value(raw: taffy::style::CompactLength) -> YGValue {
     match raw.tag() {
         taffy::style::CompactLength::LENGTH_TAG => YGValue {
@@ -685,12 +903,31 @@ fn build_taffy_tree(
 ) -> BuildNodeResult {
     unsafe {
         let n = &mut *node;
+        let direction = resolve_direction(n.direction, owner_direction);
         let mut style = n.style.clone();
+        let flex_direction_before_resolution = style.flex_direction;
+        style.inset = resolve_inset_rect(&n.position_edges, direction);
+        style.margin = resolve_margin_rect(&n.margin_edges, direction);
+        style.padding = resolve_lp_rect(&n.padding_edges, direction);
+        style.border = resolve_lp_rect(&n.border_edges, direction);
+        if direction == YG_DIRECTION_RTL {
+            style.flex_direction = match style.flex_direction {
+                FlexDirection::Row => FlexDirection::RowReverse,
+                FlexDirection::RowReverse => FlexDirection::Row,
+                other => other,
+            };
+            if matches!(
+                flex_direction_before_resolution,
+                FlexDirection::Column | FlexDirection::ColumnReverse
+            ) {
+                style.align_items = flip_align_items_for_rtl(style.align_items);
+                style.align_self = flip_align_items_for_rtl(style.align_self);
+                style.align_content = flip_align_content_for_rtl(style.align_content);
+            }
+        }
         style.flex_grow = resolve_flex_grow(n);
         style.flex_shrink = resolve_flex_shrink(n);
         style = resolve_flex_basis(n, style);
-
-        let direction = resolve_direction(n.direction, owner_direction);
         n.layout.direction = direction;
 
         let mut child_ids = Vec::with_capacity(n.children.len());
@@ -878,6 +1115,10 @@ pub extern "C" fn YGNodeNewWithConfig(config: *const YGConfig) -> *mut YGNode {
         flex: None,
         has_flex_grow: false,
         has_flex_shrink: false,
+        position_edges: YogaEdgeValuesLpa::default(),
+        margin_edges: YogaEdgeValuesLpa::default(),
+        padding_edges: YogaEdgeValuesLp::default(),
+        border_edges: YogaEdgeValuesLp::default(),
         layout: YGLayout::default(),
     }))
 }
@@ -902,6 +1143,10 @@ unsafe fn node_clone_shallow(node: *const YGNode) -> *mut YGNode {
         flex: n.flex,
         has_flex_grow: n.has_flex_grow,
         has_flex_shrink: n.has_flex_shrink,
+        position_edges: n.position_edges.clone(),
+        margin_edges: n.margin_edges.clone(),
+        padding_edges: n.padding_edges.clone(),
+        border_edges: n.border_edges.clone(),
         layout: YGLayout::default(),
     }))
 }
@@ -986,6 +1231,10 @@ pub extern "C" fn YGNodeReset(node: *mut YGNode) {
                 flex: None,
                 has_flex_grow: false,
                 has_flex_shrink: false,
+                position_edges: YogaEdgeValuesLpa::default(),
+                margin_edges: YogaEdgeValuesLpa::default(),
+                padding_edges: YogaEdgeValuesLp::default(),
+                border_edges: YogaEdgeValuesLp::default(),
                 layout: YGLayout::default(),
             };
         }
@@ -1003,65 +1252,151 @@ pub extern "C" fn YGNodeCalculateLayout(
         return;
     }
 
-    let mut tree: TaffyTree<*mut YGNode> = TaffyTree::new();
-    tree.disable_rounding();
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        let mut tree: TaffyTree<*mut YGNode> = TaffyTree::new();
+        tree.disable_rounding();
 
-    let build = build_taffy_tree(&mut tree, node, owner_direction);
-    let root_id = build.id;
+        let build = build_taffy_tree(&mut tree, node, owner_direction);
+        let root_id = build.id;
 
-    let _ = tree.compute_layout_with_measure(
-        root_id,
-        Size {
-            width: to_available_space(available_width),
-            height: to_available_space(available_height),
-        },
-        |known, available, _node_id, context, _style| {
-            let node_ptr = context.copied().unwrap_or(ptr::null_mut());
-            if node_ptr.is_null() {
-                return Size::ZERO;
-            }
-            unsafe {
-                let n = &*node_ptr;
-                if let Some(measure) = n.measure_func {
-                    let (w, wm) = if let Some(v) = known.width {
-                        (v, YG_MEASURE_MODE_EXACTLY)
-                    } else {
-                        match available.width {
-                            AvailableSpace::Definite(v) => (v, YG_MEASURE_MODE_AT_MOST),
-                            _ => (f32::NAN, YG_MEASURE_MODE_UNDEFINED),
+        let _ = tree.compute_layout_with_measure(
+            root_id,
+            Size {
+                width: to_available_space(available_width),
+                height: to_available_space(available_height),
+            },
+            |known, available, _node_id, context, _style| {
+                let node_ptr = context.copied().unwrap_or(ptr::null_mut());
+                if node_ptr.is_null() {
+                    return Size::ZERO;
+                }
+                unsafe {
+                    let n = &*node_ptr;
+                    if let Some(measure) = n.measure_func {
+                        let (w, wm) = if let Some(v) = known.width {
+                            (v, YG_MEASURE_MODE_EXACTLY)
+                        } else {
+                            match available.width {
+                                AvailableSpace::Definite(v) => (v, YG_MEASURE_MODE_AT_MOST),
+                                _ => (f32::NAN, YG_MEASURE_MODE_UNDEFINED),
+                            }
+                        };
+                        let (h, hm) = if let Some(v) = known.height {
+                            (v, YG_MEASURE_MODE_EXACTLY)
+                        } else {
+                            match available.height {
+                                AvailableSpace::Definite(v) => (v, YG_MEASURE_MODE_AT_MOST),
+                                _ => (f32::NAN, YG_MEASURE_MODE_UNDEFINED),
+                            }
+                        };
+                        let measured = measure(node_ptr, w, wm, h, hm);
+                        Size {
+                            width: measured.width.max(0.0),
+                            height: measured.height.max(0.0),
                         }
-                    };
-                    let (h, hm) = if let Some(v) = known.height {
-                        (v, YG_MEASURE_MODE_EXACTLY)
                     } else {
-                        match available.height {
-                            AvailableSpace::Definite(v) => (v, YG_MEASURE_MODE_AT_MOST),
-                            _ => (f32::NAN, YG_MEASURE_MODE_UNDEFINED),
-                        }
-                    };
-                    let measured = measure(node_ptr, w, wm, h, hm);
-                    Size {
-                        width: measured.width.max(0.0),
-                        height: measured.height.max(0.0),
+                        Size::ZERO
                     }
-                } else {
-                    Size::ZERO
+                }
+            },
+        );
+
+        let mapping = build.mapping;
+        for (node_ptr, id) in mapping.iter().copied() {
+            unsafe {
+                if let Ok(layout) = tree.layout(id) {
+                    (*node_ptr).layout.unrounded_layout = *layout;
+                    (*node_ptr).layout.final_layout = *layout;
+                    if (*node_ptr).owner.is_null() {
+                        // Yoga reports root offsets including root margins.
+                        let margin = resolve_margin_rect(&(*node_ptr).margin_edges, (*node_ptr).layout.direction);
+                        let margin_left = margin.left.resolve_to_option(0.0, |_ptr, _ctx| 0.0).unwrap_or(0.0);
+                        let margin_top = margin.top.resolve_to_option(0.0, |_ptr, _ctx| 0.0).unwrap_or(0.0);
+                        (*node_ptr).layout.unrounded_layout.location.x += margin_left;
+                        (*node_ptr).layout.unrounded_layout.location.y += margin_top;
+                        (*node_ptr).layout.final_layout.location.x += margin_left;
+                        (*node_ptr).layout.final_layout.location.y += margin_top;
+
+                        // Yoga also applies root insets even when the node has no owner.
+                        let inset = resolve_inset_rect(&(*node_ptr).position_edges, (*node_ptr).layout.direction);
+                        let containing_width = if available_width.is_nan() { 0.0 } else { available_width };
+                        let containing_height = if available_height.is_nan() { 0.0 } else { available_height };
+
+                        let left = inset.left.resolve_to_option(containing_width, |_ptr, _ctx| 0.0);
+                        let right = inset.right.resolve_to_option(containing_width, |_ptr, _ctx| 0.0);
+                        let top = inset.top.resolve_to_option(containing_height, |_ptr, _ctx| 0.0);
+                        let bottom = inset.bottom.resolve_to_option(containing_height, |_ptr, _ctx| 0.0);
+
+                        if let Some(v) = left {
+                            (*node_ptr).layout.unrounded_layout.location.x += v;
+                            (*node_ptr).layout.final_layout.location.x += v;
+                        } else if let Some(v) = right {
+                            let dx = containing_width - (*node_ptr).layout.unrounded_layout.size.width - v;
+                            (*node_ptr).layout.unrounded_layout.location.x += dx;
+                            (*node_ptr).layout.final_layout.location.x += dx;
+                        }
+
+                        if let Some(v) = top {
+                            (*node_ptr).layout.unrounded_layout.location.y += v;
+                            (*node_ptr).layout.final_layout.location.y += v;
+                        } else if let Some(v) = bottom {
+                            let dy = containing_height - (*node_ptr).layout.unrounded_layout.size.height - v;
+                            (*node_ptr).layout.unrounded_layout.location.y += dy;
+                            (*node_ptr).layout.final_layout.location.y += dy;
+                        }
+                    }
+                    (*node_ptr).layout.had_overflow = false;
+                    (*node_ptr).has_new_layout = true;
+                    (*node_ptr).is_dirty = false;
                 }
             }
-        },
-    );
+        }
 
-    for (node_ptr, id) in build.mapping {
-        unsafe {
-            if let Ok(layout) = tree.layout(id) {
-                (*node_ptr).layout.unrounded_layout = *layout;
-                (*node_ptr).layout.final_layout = *layout;
-                (*node_ptr).layout.had_overflow = false;
-                (*node_ptr).has_new_layout = true;
-                (*node_ptr).is_dirty = false;
+        for (node_ptr, _id) in mapping.iter().copied() {
+            unsafe {
+                let n = &mut *node_ptr;
+                if n.style.position != Position::Absolute || n.layout.direction != YG_DIRECTION_RTL || n.owner.is_null() {
+                    continue;
+                }
+
+                let owner_width = (*n.owner).layout.unrounded_layout.size.width;
+                let width = n.layout.unrounded_layout.size.width;
+                if !owner_width.is_finite() || !width.is_finite() {
+                    continue;
+                }
+
+                let start = n
+                    .position_edges
+                    .get_exact(YG_EDGE_START)
+                    .and_then(|v| v.resolve_to_option(owner_width, |_ptr, _ctx| 0.0));
+                let left = n
+                    .position_edges
+                    .get_exact(YG_EDGE_LEFT)
+                    .and_then(|v| v.resolve_to_option(owner_width, |_ptr, _ctx| 0.0));
+                let right = n
+                    .position_edges
+                    .get_exact(YG_EDGE_RIGHT)
+                    .and_then(|v| v.resolve_to_option(owner_width, |_ptr, _ctx| 0.0));
+                let end = n
+                    .position_edges
+                    .get_exact(YG_EDGE_END)
+                    .and_then(|v| v.resolve_to_option(owner_width, |_ptr, _ctx| 0.0));
+
+                // Yoga absolute-positioning in RTL defaults to inline-start (right side) when
+                // horizontal insets are all auto, and prioritizes `start` with definite width.
+                let x = if let Some(start_inset) = start {
+                    owner_width - width - start_inset
+                } else if left.is_none() && right.is_none() && end.is_none() {
+                    owner_width - width
+                } else {
+                    continue;
+                };
+
+                n.layout.unrounded_layout.location.x = x;
+                n.layout.final_layout.location.x = x;
             }
         }
-    }
+    }));
 }
 
 #[no_mangle]
@@ -1346,6 +1681,10 @@ pub extern "C" fn YGNodeCopyStyle(dst_node: *mut YGNode, src_node: *const YGNode
             dst.has_flex_grow = src.has_flex_grow;
             dst.has_flex_shrink = src.has_flex_shrink;
             dst.direction = src.direction;
+            dst.position_edges = src.position_edges.clone();
+            dst.margin_edges = src.margin_edges.clone();
+            dst.padding_edges = src.padding_edges.clone();
+            dst.border_edges = src.border_edges.clone();
             mark_dirty(dst_node);
         }
     }
@@ -1707,7 +2046,7 @@ pub extern "C" fn YGNodeStyleGetFlexBasis(node: *const YGNode) -> YGValue {
 pub extern "C" fn YGNodeStyleSetPosition(node: *mut YGNode, edge: i32, position: f32) {
     unsafe {
         if let Some(n) = node.as_mut() {
-            set_lpa(&mut n.style.inset, edge, n.direction, LengthPercentageAuto::length(position));
+            n.position_edges.set(edge, LengthPercentageAuto::length(position));
             mark_dirty(node);
         }
     }
@@ -1717,12 +2056,7 @@ pub extern "C" fn YGNodeStyleSetPosition(node: *mut YGNode, edge: i32, position:
 pub extern "C" fn YGNodeStyleSetPositionPercent(node: *mut YGNode, edge: i32, position: f32) {
     unsafe {
         if let Some(n) = node.as_mut() {
-            set_lpa(
-                &mut n.style.inset,
-                edge,
-                n.direction,
-                LengthPercentageAuto::percent(position / 100.0),
-            );
+            n.position_edges.set(edge, LengthPercentageAuto::percent(position / 100.0));
             mark_dirty(node);
         }
     }
@@ -1732,7 +2066,7 @@ pub extern "C" fn YGNodeStyleSetPositionPercent(node: *mut YGNode, edge: i32, po
 pub extern "C" fn YGNodeStyleSetPositionAuto(node: *mut YGNode, edge: i32) {
     unsafe {
         if let Some(n) = node.as_mut() {
-            set_lpa(&mut n.style.inset, edge, n.direction, LengthPercentageAuto::auto());
+            n.position_edges.set(edge, LengthPercentageAuto::auto());
             mark_dirty(node);
         }
     }
@@ -1742,7 +2076,7 @@ pub extern "C" fn YGNodeStyleSetPositionAuto(node: *mut YGNode, edge: i32) {
 pub extern "C" fn YGNodeStyleGetPosition(node: *const YGNode, edge: i32) -> YGValue {
     unsafe {
         node.as_ref()
-            .map(|n| lpa_to_yg_value(get_lpa(&n.style.inset, edge, n.direction)))
+            .map(|n| n.position_edges.get_exact(edge).map(lpa_to_yg_value).unwrap_or(YGValueUndefined))
             .unwrap_or(YGValueUndefined)
     }
 }
@@ -1751,7 +2085,7 @@ pub extern "C" fn YGNodeStyleGetPosition(node: *const YGNode, edge: i32) -> YGVa
 pub extern "C" fn YGNodeStyleSetMargin(node: *mut YGNode, edge: i32, margin: f32) {
     unsafe {
         if let Some(n) = node.as_mut() {
-            set_lpa(&mut n.style.margin, edge, n.direction, LengthPercentageAuto::length(margin));
+            n.margin_edges.set(edge, LengthPercentageAuto::length(margin));
             mark_dirty(node);
         }
     }
@@ -1761,12 +2095,7 @@ pub extern "C" fn YGNodeStyleSetMargin(node: *mut YGNode, edge: i32, margin: f32
 pub extern "C" fn YGNodeStyleSetMarginPercent(node: *mut YGNode, edge: i32, margin: f32) {
     unsafe {
         if let Some(n) = node.as_mut() {
-            set_lpa(
-                &mut n.style.margin,
-                edge,
-                n.direction,
-                LengthPercentageAuto::percent(margin / 100.0),
-            );
+            n.margin_edges.set(edge, LengthPercentageAuto::percent(margin / 100.0));
             mark_dirty(node);
         }
     }
@@ -1776,7 +2105,7 @@ pub extern "C" fn YGNodeStyleSetMarginPercent(node: *mut YGNode, edge: i32, marg
 pub extern "C" fn YGNodeStyleSetMarginAuto(node: *mut YGNode, edge: i32) {
     unsafe {
         if let Some(n) = node.as_mut() {
-            set_lpa(&mut n.style.margin, edge, n.direction, LengthPercentageAuto::auto());
+            n.margin_edges.set(edge, LengthPercentageAuto::auto());
             mark_dirty(node);
         }
     }
@@ -1786,7 +2115,7 @@ pub extern "C" fn YGNodeStyleSetMarginAuto(node: *mut YGNode, edge: i32) {
 pub extern "C" fn YGNodeStyleGetMargin(node: *const YGNode, edge: i32) -> YGValue {
     unsafe {
         node.as_ref()
-            .map(|n| lpa_to_yg_value(get_lpa(&n.style.margin, edge, n.direction)))
+            .map(|n| n.margin_edges.get_exact(edge).map(lpa_to_yg_value).unwrap_or(YGValueUndefined))
             .unwrap_or(YGValueUndefined)
     }
 }
@@ -1795,7 +2124,7 @@ pub extern "C" fn YGNodeStyleGetMargin(node: *const YGNode, edge: i32) -> YGValu
 pub extern "C" fn YGNodeStyleSetPadding(node: *mut YGNode, edge: i32, padding: f32) {
     unsafe {
         if let Some(n) = node.as_mut() {
-            set_lp(&mut n.style.padding, edge, n.direction, LengthPercentage::length(padding));
+            n.padding_edges.set(edge, LengthPercentage::length(padding));
             mark_dirty(node);
         }
     }
@@ -1805,12 +2134,7 @@ pub extern "C" fn YGNodeStyleSetPadding(node: *mut YGNode, edge: i32, padding: f
 pub extern "C" fn YGNodeStyleSetPaddingPercent(node: *mut YGNode, edge: i32, padding: f32) {
     unsafe {
         if let Some(n) = node.as_mut() {
-            set_lp(
-                &mut n.style.padding,
-                edge,
-                n.direction,
-                LengthPercentage::percent(padding / 100.0),
-            );
+            n.padding_edges.set(edge, LengthPercentage::percent(padding / 100.0));
             mark_dirty(node);
         }
     }
@@ -1820,7 +2144,7 @@ pub extern "C" fn YGNodeStyleSetPaddingPercent(node: *mut YGNode, edge: i32, pad
 pub extern "C" fn YGNodeStyleGetPadding(node: *const YGNode, edge: i32) -> YGValue {
     unsafe {
         node.as_ref()
-            .map(|n| lp_to_yg_value(get_lp(&n.style.padding, edge, n.direction)))
+            .map(|n| n.padding_edges.get_exact(edge).map(lp_to_yg_value).unwrap_or(YGValueUndefined))
             .unwrap_or(YGValueUndefined)
     }
 }
@@ -1829,7 +2153,7 @@ pub extern "C" fn YGNodeStyleGetPadding(node: *const YGNode, edge: i32) -> YGVal
 pub extern "C" fn YGNodeStyleSetBorder(node: *mut YGNode, edge: i32, border: f32) {
     unsafe {
         if let Some(n) = node.as_mut() {
-            set_lp(&mut n.style.border, edge, n.direction, LengthPercentage::length(border));
+            n.border_edges.set(edge, LengthPercentage::length(border));
             mark_dirty(node);
         }
     }
@@ -1838,27 +2162,9 @@ pub extern "C" fn YGNodeStyleSetBorder(node: *mut YGNode, edge: i32, border: f32
 #[no_mangle]
 pub extern "C" fn YGNodeStyleGetBorder(node: *const YGNode, edge: i32) -> f32 {
     unsafe {
-        node.as_ref().map(|n| match edge {
-            YG_EDGE_LEFT => n.style.border.left.into_raw().value(),
-            YG_EDGE_TOP => n.style.border.top.into_raw().value(),
-            YG_EDGE_RIGHT => n.style.border.right.into_raw().value(),
-            YG_EDGE_BOTTOM => n.style.border.bottom.into_raw().value(),
-            YG_EDGE_START => {
-                if n.direction == YG_DIRECTION_RTL {
-                    n.style.border.right.into_raw().value()
-                } else {
-                    n.style.border.left.into_raw().value()
-                }
-            }
-            YG_EDGE_END => {
-                if n.direction == YG_DIRECTION_RTL {
-                    n.style.border.left.into_raw().value()
-                } else {
-                    n.style.border.right.into_raw().value()
-                }
-            }
-            _ => f32::NAN,
-        }).unwrap_or(f32::NAN)
+        node.as_ref()
+            .map(|n| n.border_edges.get_exact(edge).map(|v| v.into_raw().value()).unwrap_or(f32::NAN))
+            .unwrap_or(f32::NAN)
     }
 }
 
