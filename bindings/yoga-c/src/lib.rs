@@ -369,6 +369,43 @@ fn unmap_align(value: Option<AlignItems>, auto: bool) -> i32 {
     }
 }
 
+fn map_align_content(align: i32) -> Option<AlignContent> {
+    match align {
+        YG_ALIGN_AUTO => None,
+        YG_ALIGN_FLEX_START => Some(AlignContent::FlexStart),
+        YG_ALIGN_CENTER => Some(AlignContent::Center),
+        YG_ALIGN_FLEX_END => Some(AlignContent::FlexEnd),
+        YG_ALIGN_STRETCH => Some(AlignContent::Stretch),
+        YG_ALIGN_SPACE_BETWEEN => Some(AlignContent::SpaceBetween),
+        YG_ALIGN_SPACE_AROUND => Some(AlignContent::SpaceAround),
+        YG_ALIGN_SPACE_EVENLY => Some(AlignContent::SpaceEvenly),
+        YG_ALIGN_START => Some(AlignContent::Start),
+        YG_ALIGN_END => Some(AlignContent::End),
+        _ => None,
+    }
+}
+
+fn unmap_align_content(value: Option<AlignContent>, auto: bool) -> i32 {
+    match value {
+        None => {
+            if auto {
+                YG_ALIGN_AUTO
+            } else {
+                YG_ALIGN_FLEX_START
+            }
+        }
+        Some(AlignContent::FlexStart) => YG_ALIGN_FLEX_START,
+        Some(AlignContent::Center) => YG_ALIGN_CENTER,
+        Some(AlignContent::FlexEnd) => YG_ALIGN_FLEX_END,
+        Some(AlignContent::Stretch) => YG_ALIGN_STRETCH,
+        Some(AlignContent::SpaceBetween) => YG_ALIGN_SPACE_BETWEEN,
+        Some(AlignContent::SpaceAround) => YG_ALIGN_SPACE_AROUND,
+        Some(AlignContent::SpaceEvenly) => YG_ALIGN_SPACE_EVENLY,
+        Some(AlignContent::Start) => YG_ALIGN_START,
+        Some(AlignContent::End) => YG_ALIGN_END,
+    }
+}
+
 fn flip_align_items_for_rtl(value: Option<AlignItems>) -> Option<AlignItems> {
     value.map(|v| match v {
         AlignItems::Start => AlignItems::End,
@@ -1897,7 +1934,7 @@ pub extern "C" fn YGNodeStyleGetJustifySelf(node: *const YGNode) -> i32 {
 pub extern "C" fn YGNodeStyleSetAlignContent(node: *mut YGNode, align_content: i32) {
     unsafe {
         if let Some(n) = node.as_mut() {
-            n.style.align_content = map_justify(align_content);
+            n.style.align_content = map_align_content(align_content);
             mark_dirty(node);
         }
     }
@@ -1907,8 +1944,8 @@ pub extern "C" fn YGNodeStyleSetAlignContent(node: *mut YGNode, align_content: i
 pub extern "C" fn YGNodeStyleGetAlignContent(node: *const YGNode) -> i32 {
     unsafe {
         node.as_ref()
-            .map(|n| unmap_justify(n.style.align_content, false))
-            .unwrap_or(YG_JUSTIFY_FLEX_START)
+            .map(|n| unmap_align_content(n.style.align_content, false))
+            .unwrap_or(YG_ALIGN_FLEX_START)
     }
 }
 
