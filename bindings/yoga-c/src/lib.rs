@@ -1968,6 +1968,61 @@ pub extern "C" fn YGNodeCalculateLayout(
                 if n.owner.is_null() || n.display_mode == YG_DISPLAY_NONE || n.style.position == Position::Absolute {
                     continue;
                 }
+
+                let owner = &*n.owner;
+                if owner.display_mode == YG_DISPLAY_CONTENTS
+                    || owner.style.flex_wrap != FlexWrap::NoWrap
+                    || !matches!(owner.style.flex_direction, FlexDirection::Column | FlexDirection::ColumnReverse)
+                    || owner.style.justify_content != Some(JustifyContent::Center)
+                {
+                    continue;
+                }
+
+                let margin_left_auto = n
+                    .margin_edges
+                    .get_exact(YG_EDGE_LEFT)
+                    .map(|v| lpa_to_yg_value(v).unit == YG_UNIT_AUTO)
+                    .unwrap_or(false);
+                let margin_right_auto = n
+                    .margin_edges
+                    .get_exact(YG_EDGE_RIGHT)
+                    .map(|v| lpa_to_yg_value(v).unit == YG_UNIT_AUTO)
+                    .unwrap_or(false);
+                if !margin_left_auto && !margin_right_auto {
+                    continue;
+                }
+
+                let owner_width = owner.layout.unrounded_layout.size.width;
+                let child_width = n.layout.unrounded_layout.size.width;
+                if !owner_width.is_finite() || !child_width.is_finite() {
+                    continue;
+                }
+                if child_width <= owner_width {
+                    continue;
+                }
+
+                let margin_left = n.layout.final_layout.margin.left;
+                let margin_right = n.layout.final_layout.margin.right;
+                let x = if owner.layout.direction == YG_DIRECTION_RTL {
+                    let rtl_right_margin = if margin_right_auto { 0.0 } else { margin_right };
+                    owner_width - child_width - rtl_right_margin
+                } else if margin_left_auto {
+                    0.0
+                } else {
+                    margin_left
+                };
+
+                n.layout.unrounded_layout.location.x = x;
+                n.layout.final_layout.location.x = x;
+            }
+        }
+
+        for (node_ptr, _id) in mapping.iter().copied() {
+            unsafe {
+                let n = &mut *node_ptr;
+                if n.owner.is_null() || n.display_mode == YG_DISPLAY_NONE || n.style.position == Position::Absolute {
+                    continue;
+                }
                 if n.layout.direction != YG_DIRECTION_RTL {
                     continue;
                 }
