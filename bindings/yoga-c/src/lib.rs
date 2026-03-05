@@ -1583,12 +1583,33 @@ pub extern "C" fn YGNodeCalculateLayout(
                             .map(|v| lp_to_yg_value(v).unit == YG_UNIT_PERCENT)
                             .unwrap_or(false)
                     });
+                let has_percent_vertical_inputs = [YG_EDGE_TOP, YG_EDGE_BOTTOM, YG_EDGE_VERTICAL, YG_EDGE_ALL]
+                    .iter()
+                    .any(|edge| {
+                        n.position_edges
+                            .get_exact(*edge)
+                            .map(|v| lpa_to_yg_value(v).unit == YG_UNIT_PERCENT)
+                            .unwrap_or(false)
+                            || n.margin_edges
+                                .get_exact(*edge)
+                                .map(|v| lpa_to_yg_value(v).unit == YG_UNIT_PERCENT)
+                                .unwrap_or(false)
+                            || n.padding_edges
+                                .get_exact(*edge)
+                                .map(|v| lp_to_yg_value(v).unit == YG_UNIT_PERCENT)
+                                .unwrap_or(false)
+                            || n.border_edges
+                                .get_exact(*edge)
+                                .map(|v| lp_to_yg_value(v).unit == YG_UNIT_PERCENT)
+                                .unwrap_or(false)
+                    });
                 let use_containing_for_auto_axes = width_is_percent
                     || height_is_percent
                     || has_percent_position
                     || has_percent_margin
                     || has_percent_padding
                     || has_percent_border;
+                let use_containing_for_auto_y = height_is_percent || has_percent_vertical_inputs;
 
                 if use_static_cb_compat {
                     if width_is_percent {
@@ -1808,12 +1829,12 @@ pub extern "C" fn YGNodeCalculateLayout(
                     n.layout.unrounded_layout.location.x = x;
                     n.layout.final_layout.location.x = x;
                 } else if !has_horizontal_non_auto {
-                    let (align_origin_x, align_width) = if use_static_cb_compat && use_containing_for_auto_axes {
-                        (content_left, content_width)
+                    let (align_origin_x, align_width, axis_offset_x) = if use_static_cb_compat && use_containing_for_auto_axes {
+                        (content_left, content_width, owner_space_offset_x)
                     } else if use_static_cb_compat {
-                        (direct_content_left, direct_content_width)
+                        (direct_content_left, direct_content_width, 0.0)
                     } else {
-                        (content_left, content_width)
+                        (content_left, content_width, owner_space_offset_x)
                     };
                     let x_logical_start_is_low = n.layout.direction != YG_DIRECTION_RTL;
                     let x_margin_start = if x_logical_start_is_low {
@@ -1834,7 +1855,7 @@ pub extern "C" fn YGNodeCalculateLayout(
                         x_logical_start_is_low,
                         x_margin_start,
                         x_margin_end,
-                    ) + owner_space_offset_x;
+                    ) + axis_offset_x;
                     n.layout.unrounded_layout.location.x = x;
                     n.layout.final_layout.location.x = x;
                 }
@@ -1850,12 +1871,15 @@ pub extern "C" fn YGNodeCalculateLayout(
                     n.layout.unrounded_layout.location.y = y;
                     n.layout.final_layout.location.y = y;
                 } else if !has_vertical_non_auto {
-                    let (align_origin_y, align_height) = if use_static_cb_compat && use_containing_for_auto_axes {
-                        (content_top, content_height)
+                    let (align_origin_y, align_height, axis_offset_y) = if use_static_cb_compat
+                        && use_containing_for_auto_axes
+                        && use_containing_for_auto_y
+                    {
+                        (content_top, content_height, owner_space_offset_y)
                     } else if use_static_cb_compat {
-                        (direct_content_top, direct_content_height)
+                        (direct_content_top, direct_content_height, 0.0)
                     } else {
-                        (content_top, content_height)
+                        (content_top, content_height, owner_space_offset_y)
                     };
                     let y = place_on_axis(
                         align_origin_y,
@@ -1865,7 +1889,7 @@ pub extern "C" fn YGNodeCalculateLayout(
                         true,
                         margin_top,
                         margin_bottom,
-                    ) + owner_space_offset_y;
+                    ) + axis_offset_y;
                     n.layout.unrounded_layout.location.y = y;
                     n.layout.final_layout.location.y = y;
                 }
