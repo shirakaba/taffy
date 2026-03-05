@@ -1829,7 +1829,9 @@ pub extern "C" fn YGNodeCalculateLayout(
                     n.layout.unrounded_layout.location.x = x;
                     n.layout.final_layout.location.x = x;
                 } else if !has_horizontal_non_auto {
-                    let (align_origin_x, align_width, axis_offset_x) = if use_static_cb_compat && use_containing_for_auto_axes {
+                    let (align_origin_x, align_width, axis_offset_x) = if use_static_cb_compat
+                        && use_containing_for_auto_axes
+                    {
                         (content_left, content_width, owner_space_offset_x)
                     } else if use_static_cb_compat {
                         (direct_content_left, direct_content_width, 0.0)
@@ -1951,6 +1953,11 @@ pub extern "C" fn YGNodeCalculateLayout(
                 }
 
                 let mut mirrored_x = owner_width - x - width;
+                // Yoga's RTL column mirroring keeps physical edge asymmetry (left vs right border/padding)
+                // in the mirrored result.
+                let owner_left_inset = owner.layout.final_layout.border.left + owner.layout.final_layout.padding.left;
+                let owner_right_inset = owner.layout.final_layout.border.right + owner.layout.final_layout.padding.right;
+                mirrored_x += owner_left_inset - owner_right_inset;
                 if has_horizontal_margin {
                     mirrored_x += n.layout.final_layout.margin.left - n.layout.final_layout.margin.right;
                 }
