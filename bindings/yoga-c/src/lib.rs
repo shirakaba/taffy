@@ -1355,84 +1355,157 @@ pub extern "C" fn YGNodeCalculateLayout(
         for (node_ptr, _id) in mapping.iter().copied() {
             unsafe {
                 let n = &mut *node_ptr;
-                if n.style.position != Position::Absolute || n.layout.direction != YG_DIRECTION_RTL || n.owner.is_null() {
+                if n.style.position != Position::Absolute || n.owner.is_null() {
                     continue;
                 }
 
-                let owner_width = (*n.owner).layout.unrounded_layout.size.width;
+                let owner = &*n.owner;
+                let owner_width = owner.layout.unrounded_layout.size.width;
+                let owner_height = owner.layout.unrounded_layout.size.height;
                 let width = n.layout.unrounded_layout.size.width;
-                if !owner_width.is_finite() || !width.is_finite() {
+                let height = n.layout.unrounded_layout.size.height;
+                if !owner_width.is_finite() || !owner_height.is_finite() || !width.is_finite() || !height.is_finite() {
                     continue;
                 }
+
+                let owner_border = owner.layout.final_layout.border;
+                let owner_padding = owner.layout.final_layout.padding;
+                let content_left = owner_border.left + owner_padding.left;
+                let content_top = owner_border.top + owner_padding.top;
+                let content_width =
+                    (owner_width - owner_border.left - owner_border.right - owner_padding.left - owner_padding.right).max(0.0);
+                let content_height =
+                    (owner_height - owner_border.top - owner_border.bottom - owner_padding.top - owner_padding.bottom).max(0.0);
+
+                let owner_flex_direction = owner.style.flex_direction;
+                let main_axis_is_row =
+                    matches!(owner_flex_direction, FlexDirection::Row | FlexDirection::RowReverse);
+                let main_axis_is_reverse =
+                    matches!(owner_flex_direction, FlexDirection::RowReverse | FlexDirection::ColumnReverse);
+                let cross_axis_is_reverse = matches!(owner.style.flex_wrap, FlexWrap::WrapReverse);
+
+                #[derive(Copy, Clone)]
+                enum YogaAxisAlign {
+                    Start,
+                    End,
+                    Center,
+                }
+
+                fn flip_axis_align(value: YogaAxisAlign) -> YogaAxisAlign {
+                    match value {
+                        YogaAxisAlign::Start => YogaAxisAlign::End,
+                        YogaAxisAlign::End => YogaAxisAlign::Start,
+                        YogaAxisAlign::Center => YogaAxisAlign::Center,
+                    }
+                }
+
+                let main_align = match owner.style.justify_content {
+                    Some(JustifyContent::Center) => YogaAxisAlign::Center,
+                    Some(JustifyContent::FlexEnd) | Some(JustifyContent::End) => YogaAxisAlign::End,
+                    _ => YogaAxisAlign::Start,
+                };
+                let cross_align = match n.style.align_self.or(owner.style.align_items) {
+                    Some(AlignItems::Center) => YogaAxisAlign::Center,
+                    Some(AlignItems::FlexEnd) | Some(AlignItems::End) => YogaAxisAlign::End,
+                    _ => YogaAxisAlign::Start,
+                };
+
+                let resolved_main_align = if main_axis_is_reverse {
+                    flip_axis_align(main_align)
+                } else {
+                    main_align
+                };
+                let resolved_cross_align = if cross_axis_is_reverse {
+                    flip_axis_align(cross_align)
+                } else {
+                    cross_align
+                };
+
+                let axis_x_align = if main_axis_is_row {
+                    resolved_main_align
+                } else {
+                    resolved_cross_align
+                };
+                let axis_y_align = if main_axis_is_row {
+                    resolved_cross_align
+                } else {
+                    resolved_main_align
+                };
+
+                let place_on_axis =
+                    |origin: f32, available: f32, child: f32, align: YogaAxisAlign, logical_start_is_low: bool| {
+                        let free = (available - child).max(0.0);
+                        let pos = match align {
+                            YogaAxisAlign::Center => free / 2.0,
+                            YogaAxisAlign::Start => {
+                                if logical_start_is_low {
+                                    0.0
+                                } else {
+                                    free
+                                }
+                            }
+                            YogaAxisAlign::End => {
+                                if logical_start_is_low {
+                                    free
+                                } else {
+                                    0.0
+                                }
+                            }
+                        };
+                        origin + pos
+                    };
 
                 let start_raw = n.position_edges.get_exact(YG_EDGE_START);
                 let end_raw = n.position_edges.get_exact(YG_EDGE_END);
                 let left_raw = n.position_edges.get_exact(YG_EDGE_LEFT);
                 let right_raw = n.position_edges.get_exact(YG_EDGE_RIGHT);
+                let top_raw = n.position_edges.get_exact(YG_EDGE_TOP);
+                let bottom_raw = n.position_edges.get_exact(YG_EDGE_BOTTOM);
 
-                let start = start_raw.and_then(|v| v.resolve_to_option(owner_width, |_ptr, _ctx| 0.0));
-                let end = end_raw.and_then(|v| v.resolve_to_option(owner_width, |_ptr, _ctx| 0.0));
-                let left = left_raw.and_then(|v| v.resolve_to_option(owner_width, |_ptr, _ctx| 0.0));
-                let right = right_raw.and_then(|v| v.resolve_to_option(owner_width, |_ptr, _ctx| 0.0));
+                let start = start_raw.and_then(|v| v.resolve_to_option(content_width, |_ptr, _ctx| 0.0));
+                let end = end_raw.and_then(|v| v.resolve_to_option(content_width, |_ptr, _ctx| 0.0));
+                let left = left_raw.and_then(|v| v.resolve_to_option(content_width, |_ptr, _ctx| 0.0));
+                let right = right_raw.and_then(|v| v.resolve_to_option(content_width, |_ptr, _ctx| 0.0));
+                let top = top_raw.and_then(|v| v.resolve_to_option(content_height, |_ptr, _ctx| 0.0));
+                let bottom = bottom_raw.and_then(|v| v.resolve_to_option(content_height, |_ptr, _ctx| 0.0));
 
-                // Yoga absolute-positioning in RTL defaults to inline-start (right side) when
-                // horizontal insets are all auto, and prioritizes `start` with definite width.
-                let x = if let Some(start_inset) = start {
-                    owner_width - width - start_inset
-                } else if start_raw.is_none()
-                    && end_raw.is_none()
-                    && left_raw.is_none()
-                    && right_raw.is_none()
-                {
-                    let owner = &*n.owner;
-                    let mut owner_flex_direction = owner.style.flex_direction;
-                    if owner.layout.direction == YG_DIRECTION_RTL {
-                        owner_flex_direction = match owner_flex_direction {
-                            FlexDirection::Row => FlexDirection::RowReverse,
-                            FlexDirection::RowReverse => FlexDirection::Row,
-                            other => other,
-                        };
-                    }
+                let has_horizontal_non_auto = start.is_some()
+                    || end.is_some()
+                    || left.is_some()
+                    || right.is_some();
+                let has_vertical_non_auto = top.is_some() || bottom.is_some();
 
-                    let start_like_horizontal_alignment = if matches!(
-                        owner_flex_direction,
-                        FlexDirection::Column | FlexDirection::ColumnReverse
-                    ) {
-                        let effective_align_self = n.style.align_self.or(owner.style.align_items);
-                        matches!(
-                            effective_align_self,
-                            None
-                                | Some(AlignItems::Stretch)
-                                | Some(AlignItems::FlexStart)
-                                | Some(AlignItems::Start)
-                        )
+                if let Some(start_inset) = start {
+                    // `start` wins over `end` for RTL with definite width (Yoga behavior).
+                    let x = if n.layout.direction == YG_DIRECTION_RTL {
+                        content_left + content_width - width - start_inset
                     } else {
-                        matches!(
-                            owner.style.justify_content,
-                            None | Some(JustifyContent::FlexStart) | Some(JustifyContent::Start)
-                        )
+                        content_left + start_inset
                     };
-
-                    if start_like_horizontal_alignment {
-                        owner_width - width
-                    } else {
-                        continue;
-                    }
-                } else if start_raw.is_none()
+                    n.layout.unrounded_layout.location.x = x;
+                    n.layout.final_layout.location.x = x;
+                } else if n.layout.direction == YG_DIRECTION_RTL
+                    && start_raw.is_none()
                     && end_raw.is_none()
-                    && matches!(left_raw, Some(v) if v.is_auto())
-                    && matches!(right_raw, Some(v) if v.is_auto())
-                    && left.is_none()
-                    && right.is_none()
-                    && end.is_none()
+                    && left.is_some()
+                    && right.is_some()
                 {
-                    owner_width - width
-                } else {
-                    continue;
-                };
+                    // Yoga favors the physical right inset for this RTL left+right absolute case.
+                    let x = content_left + content_width - width - right.unwrap_or(0.0) - n.layout.final_layout.margin.right;
+                    n.layout.unrounded_layout.location.x = x;
+                    n.layout.final_layout.location.x = x;
+                } else if !has_horizontal_non_auto {
+                    let x =
+                        place_on_axis(content_left, content_width, width, axis_x_align, n.layout.direction != YG_DIRECTION_RTL);
+                    n.layout.unrounded_layout.location.x = x;
+                    n.layout.final_layout.location.x = x;
+                }
 
-                n.layout.unrounded_layout.location.x = x;
-                n.layout.final_layout.location.x = x;
+                if !has_vertical_non_auto {
+                    let y = place_on_axis(content_top, content_height, height, axis_y_align, true);
+                    n.layout.unrounded_layout.location.y = y;
+                    n.layout.final_layout.location.y = y;
+                }
             }
         }
     }));
