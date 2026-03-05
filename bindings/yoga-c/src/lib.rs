@@ -161,6 +161,7 @@ impl Default for YGLayout {
 
 struct YGNode {
     style: Style,
+    display_mode: i32,
     owner: *mut YGNode,
     children: Vec<*mut YGNode>,
     config: *mut YGConfig,
@@ -929,8 +930,9 @@ fn resolve_direction(node_direction: i32, owner_direction: i32) -> i32 {
 }
 
 struct BuildNodeResult {
-    id: taffy::NodeId,
+    ids: Vec<taffy::NodeId>,
     mapping: Vec<(*mut YGNode, taffy::NodeId)>,
+    contents_nodes: Vec<*mut YGNode>,
 }
 
 fn build_taffy_tree(
@@ -953,14 +955,6 @@ fn build_taffy_tree(
                 FlexDirection::RowReverse => FlexDirection::Row,
                 other => other,
             };
-            if matches!(
-                flex_direction_before_resolution,
-                FlexDirection::Column | FlexDirection::ColumnReverse
-            ) {
-                style.align_items = flip_align_items_for_rtl(style.align_items);
-                style.align_self = flip_align_items_for_rtl(style.align_self);
-                style.align_content = flip_align_content_for_rtl(style.align_content);
-            }
         }
         style.flex_grow = resolve_flex_grow(n);
         style.flex_shrink = resolve_flex_shrink(n);
@@ -969,10 +963,21 @@ fn build_taffy_tree(
 
         let mut child_ids = Vec::with_capacity(n.children.len());
         let mut mapping = Vec::new();
+        let mut contents_nodes = Vec::new();
         for child in n.children.iter().copied() {
             let result = build_taffy_tree(tree, child, direction);
-            child_ids.push(result.id);
+            child_ids.extend(result.ids);
             mapping.extend(result.mapping);
+            contents_nodes.extend(result.contents_nodes);
+        }
+
+        if n.display_mode == YG_DISPLAY_CONTENTS {
+            contents_nodes.push(node);
+            return BuildNodeResult {
+                ids: child_ids,
+                mapping,
+                contents_nodes,
+            };
         }
 
         let id = if child_ids.is_empty() {
@@ -982,7 +987,11 @@ fn build_taffy_tree(
         };
 
         mapping.push((node, id));
-        BuildNodeResult { id, mapping }
+        BuildNodeResult {
+            ids: vec![id],
+            mapping,
+            contents_nodes,
+        }
     }
 }
 
@@ -1136,6 +1145,7 @@ pub extern "C" fn YGNodeNewWithConfig(config: *const YGConfig) -> *mut YGNode {
     let style = unsafe { default_style((*config).use_web_defaults) };
     Box::into_raw(Box::new(YGNode {
         style,
+        display_mode: YG_DISPLAY_FLEX,
         owner: ptr::null_mut(),
         children: Vec::new(),
         config,
@@ -1164,6 +1174,7 @@ unsafe fn node_clone_shallow(node: *const YGNode) -> *mut YGNode {
     let n = &*node;
     Box::into_raw(Box::new(YGNode {
         style: n.style.clone(),
+        display_mode: n.display_mode,
         owner: ptr::null_mut(),
         children: n.children.clone(),
         config: n.config,
@@ -1252,6 +1263,7 @@ pub extern "C" fn YGNodeReset(node: *mut YGNode) {
             let context = n.context;
             *n = YGNode {
                 style: default_style(use_web_defaults),
+                display_mode: YG_DISPLAY_FLEX,
                 owner: ptr::null_mut(),
                 children: Vec::new(),
                 config: n.config,
@@ -1294,7 +1306,13 @@ pub extern "C" fn YGNodeCalculateLayout(
         tree.disable_rounding();
 
         let build = build_taffy_tree(&mut tree, node, owner_direction);
-        let root_id = build.id;
+        let root_id = if build.ids.is_empty() {
+            tree.new_leaf_with_context(Style::DEFAULT, ptr::null_mut()).unwrap()
+        } else if build.ids.len() == 1 {
+            build.ids[0]
+        } else {
+            tree.new_with_children(Style::DEFAULT, &build.ids).unwrap()
+        };
 
         let _ = tree.compute_layout_with_measure(
             root_id,
@@ -1338,7 +1356,11 @@ pub extern "C" fn YGNodeCalculateLayout(
             },
         );
 
-        let mapping = build.mapping;
+        let BuildNodeResult {
+            mapping,
+            contents_nodes,
+            ..
+        } = build;
         for (node_ptr, id) in mapping.iter().copied() {
             unsafe {
                 if let Ok(layout) = tree.layout(id) {
@@ -1389,10 +1411,21 @@ pub extern "C" fn YGNodeCalculateLayout(
             }
         }
 
+        for node_ptr in contents_nodes {
+            unsafe {
+                (*node_ptr).layout.unrounded_layout = Layout::new();
+                (*node_ptr).layout.final_layout = Layout::new();
+                (*node_ptr).layout.direction = resolve_direction((*node_ptr).direction, owner_direction);
+                (*node_ptr).layout.had_overflow = false;
+                (*node_ptr).has_new_layout = true;
+                (*node_ptr).is_dirty = false;
+            }
+        }
+
         for (node_ptr, _id) in mapping.iter().copied() {
             unsafe {
                 let n = &mut *node_ptr;
-                if n.style.position != Position::Absolute || n.owner.is_null() {
+                if n.style.position != Position::Absolute || n.owner.is_null() || n.display_mode == YG_DISPLAY_NONE {
                     continue;
                 }
 
@@ -1469,28 +1502,25 @@ pub extern "C" fn YGNodeCalculateLayout(
                     resolved_main_align
                 };
 
-                let place_on_axis =
-                    |origin: f32, available: f32, child: f32, align: YogaAxisAlign, logical_start_is_low: bool| {
-                        let free = (available - child).max(0.0);
-                        let pos = match align {
-                            YogaAxisAlign::Center => free / 2.0,
-                            YogaAxisAlign::Start => {
-                                if logical_start_is_low {
-                                    0.0
-                                } else {
-                                    free
-                                }
-                            }
-                            YogaAxisAlign::End => {
-                                if logical_start_is_low {
-                                    free
-                                } else {
-                                    0.0
-                                }
-                            }
-                        };
-                        origin + pos
+                let place_on_axis = |origin: f32,
+                                     available: f32,
+                                     child: f32,
+                                     align: YogaAxisAlign,
+                                     logical_start_is_low: bool,
+                                     margin_start: f32,
+                                     margin_end: f32| {
+                    let free = (available - child - margin_start - margin_end).max(0.0);
+                    let logical_pos = match align {
+                        YogaAxisAlign::Center => margin_start + (free / 2.0),
+                        YogaAxisAlign::Start => margin_start,
+                        YogaAxisAlign::End => margin_start + free,
                     };
+                    if logical_start_is_low {
+                        origin + logical_pos
+                    } else {
+                        origin + (available - logical_pos - child)
+                    }
+                };
 
                 let start_raw = n.position_edges.get_exact(YG_EDGE_START);
                 let end_raw = n.position_edges.get_exact(YG_EDGE_END);
@@ -1505,6 +1535,23 @@ pub extern "C" fn YGNodeCalculateLayout(
                 let right = right_raw.and_then(|v| v.resolve_to_option(content_width, |_ptr, _ctx| 0.0));
                 let top = top_raw.and_then(|v| v.resolve_to_option(content_height, |_ptr, _ctx| 0.0));
                 let bottom = bottom_raw.and_then(|v| v.resolve_to_option(content_height, |_ptr, _ctx| 0.0));
+                let resolved_margin = resolve_margin_rect(&n.margin_edges, n.layout.direction);
+                let margin_left = resolved_margin
+                    .left
+                    .resolve_to_option(content_width, |_ptr, _ctx| 0.0)
+                    .unwrap_or(0.0);
+                let margin_right = resolved_margin
+                    .right
+                    .resolve_to_option(content_width, |_ptr, _ctx| 0.0)
+                    .unwrap_or(0.0);
+                let margin_top = resolved_margin
+                    .top
+                    .resolve_to_option(content_height, |_ptr, _ctx| 0.0)
+                    .unwrap_or(0.0);
+                let margin_bottom = resolved_margin
+                    .bottom
+                    .resolve_to_option(content_height, |_ptr, _ctx| 0.0)
+                    .unwrap_or(0.0);
 
                 let has_horizontal_non_auto = start.is_some()
                     || end.is_some()
@@ -1532,17 +1579,87 @@ pub extern "C" fn YGNodeCalculateLayout(
                     n.layout.unrounded_layout.location.x = x;
                     n.layout.final_layout.location.x = x;
                 } else if !has_horizontal_non_auto {
-                    let x =
-                        place_on_axis(content_left, content_width, width, axis_x_align, n.layout.direction != YG_DIRECTION_RTL);
+                    let x_logical_start_is_low = n.layout.direction != YG_DIRECTION_RTL;
+                    let x_margin_start = if x_logical_start_is_low {
+                        margin_left
+                    } else {
+                        margin_right
+                    };
+                    let x_margin_end = if x_logical_start_is_low {
+                        margin_right
+                    } else {
+                        margin_left
+                    };
+                    let x = place_on_axis(
+                        content_left,
+                        content_width,
+                        width,
+                        axis_x_align,
+                        x_logical_start_is_low,
+                        x_margin_start,
+                        x_margin_end,
+                    );
                     n.layout.unrounded_layout.location.x = x;
                     n.layout.final_layout.location.x = x;
                 }
 
                 if !has_vertical_non_auto {
-                    let y = place_on_axis(content_top, content_height, height, axis_y_align, true);
+                    let y = place_on_axis(
+                        content_top,
+                        content_height,
+                        height,
+                        axis_y_align,
+                        true,
+                        margin_top,
+                        margin_bottom,
+                    );
                     n.layout.unrounded_layout.location.y = y;
                     n.layout.final_layout.location.y = y;
                 }
+            }
+        }
+
+        for (node_ptr, _id) in mapping.iter().copied() {
+            unsafe {
+                let n = &mut *node_ptr;
+                if n.owner.is_null() || n.display_mode == YG_DISPLAY_NONE {
+                    continue;
+                }
+
+                let owner = &*n.owner;
+                if owner.display_mode == YG_DISPLAY_CONTENTS {
+                    continue;
+                }
+                if owner.layout.direction != YG_DIRECTION_RTL
+                    || !matches!(owner.style.flex_direction, FlexDirection::Column | FlexDirection::ColumnReverse)
+                {
+                    continue;
+                }
+                if owner.style.align_items.is_some() || n.style.align_self.is_some() {
+                    continue;
+                }
+
+                let start = n.position_edges.get_exact(YG_EDGE_START);
+                let end = n.position_edges.get_exact(YG_EDGE_END);
+                let left = n.position_edges.get_exact(YG_EDGE_LEFT);
+                let right = n.position_edges.get_exact(YG_EDGE_RIGHT);
+                if start.is_some() || end.is_some() || left.is_some() || right.is_some() {
+                    continue;
+                }
+
+                let owner_width = owner.layout.unrounded_layout.size.width;
+                let width = n.layout.unrounded_layout.size.width;
+                let x = n.layout.unrounded_layout.location.x;
+                if !owner_width.is_finite() || !width.is_finite() || !x.is_finite() {
+                    continue;
+                }
+                if n.style.position == Position::Absolute && x.abs() > 0.0001 {
+                    continue;
+                }
+
+                let mirrored_x = owner_width - x - width;
+                n.layout.unrounded_layout.location.x = mirrored_x;
+                n.layout.final_layout.location.x = mirrored_x;
             }
         }
     }));
@@ -1826,6 +1943,7 @@ pub extern "C" fn YGNodeCopyStyle(dst_node: *mut YGNode, src_node: *const YGNode
     unsafe {
         if let (Some(dst), Some(src)) = (dst_node.as_mut(), src_node.as_ref()) {
             dst.style = src.style.clone();
+            dst.display_mode = src.display_mode;
             dst.flex = src.flex;
             dst.has_flex_grow = src.has_flex_grow;
             dst.has_flex_shrink = src.has_flex_shrink;
@@ -2046,6 +2164,7 @@ pub extern "C" fn YGNodeStyleGetOverflow(node: *const YGNode) -> i32 {
 pub extern "C" fn YGNodeStyleSetDisplay(node: *mut YGNode, display: i32) {
     unsafe {
         if let Some(n) = node.as_mut() {
+            n.display_mode = display;
             n.style.display = map_display(display);
             mark_dirty(node);
         }
@@ -2054,7 +2173,7 @@ pub extern "C" fn YGNodeStyleSetDisplay(node: *mut YGNode, display: i32) {
 
 #[no_mangle]
 pub extern "C" fn YGNodeStyleGetDisplay(node: *const YGNode) -> i32 {
-    unsafe { node.as_ref().map(|n| unmap_display(n.style.display)).unwrap_or(YG_DISPLAY_FLEX) }
+    unsafe { node.as_ref().map(|n| n.display_mode).unwrap_or(YG_DISPLAY_FLEX) }
 }
 
 #[no_mangle]
