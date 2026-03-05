@@ -1,0 +1,12 @@
+[package]
+name = "taffy_yoga_c"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["staticlib"]
+
+[dependencies]
+taffy = { path = "../..", default-features = true }
+
+[workspace]

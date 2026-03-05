@@ -1,4 +1,5 @@
 /target
+/bindings/yoga-c/target
 /scripts/gentest/target
 /benches/target
 /examples/cosmic_text/target
