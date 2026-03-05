@@ -930,6 +930,28 @@ fn resolve_direction(node_direction: i32, owner_direction: i32) -> i32 {
     }
 }
 
+unsafe fn node_global_location(mut node: *const YGNode) -> (f32, f32) {
+    let mut x = 0.0;
+    let mut y = 0.0;
+    while !node.is_null() {
+        x += (*node).layout.unrounded_layout.location.x;
+        y += (*node).layout.unrounded_layout.location.y;
+        node = (*node).owner;
+    }
+    (x, y)
+}
+
+unsafe fn absolute_containing_block(mut owner: *mut YGNode) -> *mut YGNode {
+    while !owner.is_null() {
+        let o = &*owner;
+        if o.owner.is_null() || o.position_type_mode != YG_POSITION_TYPE_STATIC || o.always_forms_containing_block {
+            return owner;
+        }
+        owner = o.owner;
+    }
+    owner
+}
+
 struct BuildNodeResult {
     ids: Vec<taffy::NodeId>,
     mapping: Vec<(*mut YGNode, taffy::NodeId)>,
@@ -1435,17 +1457,24 @@ pub extern "C" fn YGNodeCalculateLayout(
                     continue;
                 }
 
-                let owner = &*n.owner;
-                let owner_width = owner.layout.unrounded_layout.size.width;
-                let owner_height = owner.layout.unrounded_layout.size.height;
+                let direct_owner = &*n.owner;
+                let containing_ptr = absolute_containing_block(n.owner);
+                if containing_ptr.is_null() {
+                    continue;
+                }
+                let containing = &*containing_ptr;
+                let use_static_cb_compat = containing_ptr != n.owner;
+
+                let owner_width = containing.layout.unrounded_layout.size.width;
+                let owner_height = containing.layout.unrounded_layout.size.height;
                 let width = n.layout.unrounded_layout.size.width;
                 let height = n.layout.unrounded_layout.size.height;
                 if !owner_width.is_finite() || !owner_height.is_finite() || !width.is_finite() || !height.is_finite() {
                     continue;
                 }
 
-                let owner_border = owner.layout.final_layout.border;
-                let owner_padding = owner.layout.final_layout.padding;
+                let owner_border = containing.layout.final_layout.border;
+                let owner_padding = containing.layout.final_layout.padding;
                 let content_left = owner_border.left + owner_padding.left;
                 let content_top = owner_border.top + owner_padding.top;
                 let content_width =
@@ -1453,12 +1482,36 @@ pub extern "C" fn YGNodeCalculateLayout(
                 let content_height =
                     (owner_height - owner_border.top - owner_border.bottom - owner_padding.top - owner_padding.bottom).max(0.0);
 
-                let owner_flex_direction = owner.style.flex_direction;
+                let direct_owner_width = direct_owner.layout.unrounded_layout.size.width;
+                let direct_owner_height = direct_owner.layout.unrounded_layout.size.height;
+                let direct_owner_border = direct_owner.layout.final_layout.border;
+                let direct_owner_padding = direct_owner.layout.final_layout.padding;
+                let direct_content_left = direct_owner_border.left + direct_owner_padding.left;
+                let direct_content_top = direct_owner_border.top + direct_owner_padding.top;
+                let direct_content_width = (direct_owner_width
+                    - direct_owner_border.left
+                    - direct_owner_border.right
+                    - direct_owner_padding.left
+                    - direct_owner_padding.right)
+                    .max(0.0);
+                let direct_content_height = (direct_owner_height
+                    - direct_owner_border.top
+                    - direct_owner_border.bottom
+                    - direct_owner_padding.top
+                    - direct_owner_padding.bottom)
+                    .max(0.0);
+
+                let (direct_owner_global_x, direct_owner_global_y) = node_global_location(n.owner);
+                let (containing_global_x, containing_global_y) = node_global_location(containing_ptr);
+                let owner_space_offset_x = containing_global_x - direct_owner_global_x;
+                let owner_space_offset_y = containing_global_y - direct_owner_global_y;
+
+                let owner_flex_direction = direct_owner.style.flex_direction;
                 let main_axis_is_row =
                     matches!(owner_flex_direction, FlexDirection::Row | FlexDirection::RowReverse);
                 let main_axis_is_reverse =
                     matches!(owner_flex_direction, FlexDirection::RowReverse | FlexDirection::ColumnReverse);
-                let cross_axis_is_reverse = matches!(owner.style.flex_wrap, FlexWrap::WrapReverse);
+                let cross_axis_is_reverse = matches!(direct_owner.style.flex_wrap, FlexWrap::WrapReverse);
 
                 #[derive(Copy, Clone)]
                 enum YogaAxisAlign {
@@ -1475,12 +1528,12 @@ pub extern "C" fn YGNodeCalculateLayout(
                     }
                 }
 
-                let main_align = match owner.style.justify_content {
+                let main_align = match direct_owner.style.justify_content {
                     Some(JustifyContent::Center) => YogaAxisAlign::Center,
                     Some(JustifyContent::FlexEnd) | Some(JustifyContent::End) => YogaAxisAlign::End,
                     _ => YogaAxisAlign::Start,
                 };
-                let cross_align = match n.style.align_self.or(owner.style.align_items) {
+                let cross_align = match n.style.align_self.or(direct_owner.style.align_items) {
                     Some(AlignItems::Center) => YogaAxisAlign::Center,
                     Some(AlignItems::FlexEnd) | Some(AlignItems::End) => YogaAxisAlign::End,
                     _ => YogaAxisAlign::Start,
@@ -1571,7 +1624,7 @@ pub extern "C" fn YGNodeCalculateLayout(
                         content_left + content_width - width - start_inset
                     } else {
                         content_left + start_inset
-                    };
+                    } + owner_space_offset_x;
                     n.layout.unrounded_layout.location.x = x;
                     n.layout.final_layout.location.x = x;
                 } else if n.layout.direction == YG_DIRECTION_RTL
@@ -1581,10 +1634,36 @@ pub extern "C" fn YGNodeCalculateLayout(
                     && right.is_some()
                 {
                     // Yoga favors the physical right inset for this RTL left+right absolute case.
-                    let x = content_left + content_width - width - right.unwrap_or(0.0) - n.layout.final_layout.margin.right;
+                    let x =
+                        content_left + content_width - width - right.unwrap_or(0.0) - n.layout.final_layout.margin.right
+                            + owner_space_offset_x;
+                    n.layout.unrounded_layout.location.x = x;
+                    n.layout.final_layout.location.x = x;
+                } else if use_static_cb_compat && left.is_some() {
+                    let left_inset = left.unwrap_or(0.0);
+                    let x = content_left + left_inset + owner_space_offset_x;
+                    n.layout.unrounded_layout.location.x = x;
+                    n.layout.final_layout.location.x = x;
+                } else if use_static_cb_compat && end.is_some() {
+                    let end_inset = end.unwrap_or(0.0);
+                    let x = if n.layout.direction == YG_DIRECTION_RTL {
+                        content_left + end_inset
+                    } else {
+                        content_left + content_width - width - end_inset
+                    } + owner_space_offset_x;
+                    n.layout.unrounded_layout.location.x = x;
+                    n.layout.final_layout.location.x = x;
+                } else if use_static_cb_compat && right.is_some() {
+                    let right_inset = right.unwrap_or(0.0);
+                    let x = content_left + content_width - width - right_inset + owner_space_offset_x;
                     n.layout.unrounded_layout.location.x = x;
                     n.layout.final_layout.location.x = x;
                 } else if !has_horizontal_non_auto {
+                    let (align_origin_x, align_width) = if use_static_cb_compat {
+                        (direct_content_left, direct_content_width)
+                    } else {
+                        (content_left, content_width)
+                    };
                     let x_logical_start_is_low = n.layout.direction != YG_DIRECTION_RTL;
                     let x_margin_start = if x_logical_start_is_low {
                         margin_left
@@ -1597,28 +1676,43 @@ pub extern "C" fn YGNodeCalculateLayout(
                         margin_left
                     };
                     let x = place_on_axis(
-                        content_left,
-                        content_width,
+                        align_origin_x,
+                        align_width,
                         width,
                         axis_x_align,
                         x_logical_start_is_low,
                         x_margin_start,
                         x_margin_end,
-                    );
+                    ) + owner_space_offset_x;
                     n.layout.unrounded_layout.location.x = x;
                     n.layout.final_layout.location.x = x;
                 }
 
-                if !has_vertical_non_auto {
+                if use_static_cb_compat && top.is_some() {
+                    let top_inset = top.unwrap_or(0.0);
+                    let y = content_top + top_inset + owner_space_offset_y;
+                    n.layout.unrounded_layout.location.y = y;
+                    n.layout.final_layout.location.y = y;
+                } else if use_static_cb_compat && bottom.is_some() {
+                    let bottom_inset = bottom.unwrap_or(0.0);
+                    let y = content_top + content_height - height - bottom_inset + owner_space_offset_y;
+                    n.layout.unrounded_layout.location.y = y;
+                    n.layout.final_layout.location.y = y;
+                } else if !has_vertical_non_auto {
+                    let (align_origin_y, align_height) = if use_static_cb_compat {
+                        (direct_content_top, direct_content_height)
+                    } else {
+                        (content_top, content_height)
+                    };
                     let y = place_on_axis(
-                        content_top,
-                        content_height,
+                        align_origin_y,
+                        align_height,
                         height,
                         axis_y_align,
                         true,
                         margin_top,
                         margin_bottom,
-                    );
+                    ) + owner_space_offset_y;
                     n.layout.unrounded_layout.location.y = y;
                     n.layout.final_layout.location.y = y;
                 }
@@ -1641,15 +1735,21 @@ pub extern "C" fn YGNodeCalculateLayout(
                 {
                     continue;
                 }
-                if owner.style.align_items.is_some() || n.style.align_self.is_some() {
+                if matches!(owner.style.flex_wrap, FlexWrap::WrapReverse) {
                     continue;
                 }
-
                 let start = n.position_edges.get_exact(YG_EDGE_START);
                 let end = n.position_edges.get_exact(YG_EDGE_END);
                 let left = n.position_edges.get_exact(YG_EDGE_LEFT);
                 let right = n.position_edges.get_exact(YG_EDGE_RIGHT);
                 if start.is_some() || end.is_some() || left.is_some() || right.is_some() {
+                    continue;
+                }
+                let margin_start = n.margin_edges.get_exact(YG_EDGE_START);
+                let margin_end = n.margin_edges.get_exact(YG_EDGE_END);
+                let margin_left = n.margin_edges.get_exact(YG_EDGE_LEFT);
+                let margin_right = n.margin_edges.get_exact(YG_EDGE_RIGHT);
+                if margin_start.is_some() || margin_end.is_some() || margin_left.is_some() || margin_right.is_some() {
                     continue;
                 }
 
@@ -1659,13 +1759,73 @@ pub extern "C" fn YGNodeCalculateLayout(
                 if !owner_width.is_finite() || !width.is_finite() || !x.is_finite() {
                     continue;
                 }
-                if n.style.position == Position::Absolute && x.abs() > 0.0001 {
+                if n.style.position == Position::Absolute {
                     continue;
                 }
 
                 let mirrored_x = owner_width - x - width;
                 n.layout.unrounded_layout.location.x = mirrored_x;
                 n.layout.final_layout.location.x = mirrored_x;
+            }
+        }
+
+        for (node_ptr, _id) in mapping.iter().copied() {
+            unsafe {
+                let n = &mut *node_ptr;
+                if n.style.position != Position::Absolute || n.owner.is_null() || n.display_mode == YG_DISPLAY_NONE {
+                    continue;
+                }
+
+                let direct_owner = &*n.owner;
+                if direct_owner.style.position == Position::Absolute || direct_owner.display_mode == YG_DISPLAY_NONE {
+                    continue;
+                }
+                if direct_owner.owner.is_null() {
+                    continue;
+                }
+                let owner_parent = &*direct_owner.owner;
+                if owner_parent.display_mode == YG_DISPLAY_CONTENTS
+                    || owner_parent.layout.direction != YG_DIRECTION_RTL
+                    || !matches!(
+                        owner_parent.style.flex_direction,
+                        FlexDirection::Column | FlexDirection::ColumnReverse
+                    )
+                    || matches!(owner_parent.style.flex_wrap, FlexWrap::WrapReverse)
+                {
+                    continue;
+                }
+
+                let owner_start = direct_owner.position_edges.get_exact(YG_EDGE_START);
+                let owner_end = direct_owner.position_edges.get_exact(YG_EDGE_END);
+                let owner_left = direct_owner.position_edges.get_exact(YG_EDGE_LEFT);
+                let owner_right = direct_owner.position_edges.get_exact(YG_EDGE_RIGHT);
+                if owner_start.is_some() || owner_end.is_some() || owner_left.is_some() || owner_right.is_some() {
+                    continue;
+                }
+                let owner_margin_start = direct_owner.margin_edges.get_exact(YG_EDGE_START);
+                let owner_margin_end = direct_owner.margin_edges.get_exact(YG_EDGE_END);
+                let owner_margin_left = direct_owner.margin_edges.get_exact(YG_EDGE_LEFT);
+                let owner_margin_right = direct_owner.margin_edges.get_exact(YG_EDGE_RIGHT);
+                if owner_margin_start.is_some()
+                    || owner_margin_end.is_some()
+                    || owner_margin_left.is_some()
+                    || owner_margin_right.is_some()
+                {
+                    continue;
+                }
+
+                let containing_ptr = absolute_containing_block(n.owner);
+                if containing_ptr.is_null() || containing_ptr == n.owner {
+                    continue;
+                }
+                let (owner_global_x, _) = node_global_location(n.owner);
+                let (containing_global_x, _) = node_global_location(containing_ptr);
+                let delta_x = containing_global_x - owner_global_x;
+                if delta_x.abs() <= 0.0001 {
+                    continue;
+                }
+                n.layout.unrounded_layout.location.x += delta_x;
+                n.layout.final_layout.location.x += delta_x;
             }
         }
     }));
