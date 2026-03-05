@@ -1642,6 +1642,16 @@ pub extern "C" fn YGNodeCalculateLayout(
                     - direct_owner_padding.top
                     - direct_owner_padding.bottom)
                     .max(0.0);
+                let direct_owner_has_horizontal_decoration =
+                    direct_owner_border.left != 0.0
+                        || direct_owner_border.right != 0.0
+                        || direct_owner_padding.left != 0.0
+                        || direct_owner_padding.right != 0.0;
+                let direct_owner_has_vertical_decoration =
+                    direct_owner_border.top != 0.0
+                        || direct_owner_border.bottom != 0.0
+                        || direct_owner_padding.top != 0.0
+                        || direct_owner_padding.bottom != 0.0;
 
                 if use_static_cb_compat && has_percent_padding {
                     let resolved_padding = resolve_lp_rect(&n.padding_edges, n.layout.direction);
@@ -1730,6 +1740,18 @@ pub extern "C" fn YGNodeCalculateLayout(
                 } else {
                     resolved_main_align
                 };
+                let prefer_direct_owner_auto_x = use_static_cb_compat
+                    && direct_owner_has_horizontal_decoration
+                    && !has_percent_position
+                    && !has_percent_margin
+                    && !has_percent_padding
+                    && !has_percent_border
+                    && !main_axis_is_reverse
+                    && !cross_axis_is_reverse;
+                let prefer_direct_owner_auto_y = use_static_cb_compat
+                    && direct_owner_has_vertical_decoration
+                    && !main_axis_is_reverse
+                    && !cross_axis_is_reverse;
 
                 let place_on_axis = |origin: f32,
                                      available: f32,
@@ -1790,11 +1812,14 @@ pub extern "C" fn YGNodeCalculateLayout(
 
                 if let Some(start_inset) = start {
                     // `start` wins over `end` for RTL with definite width (Yoga behavior).
-                    let x = if n.layout.direction == YG_DIRECTION_RTL {
+                    let mut x = if n.layout.direction == YG_DIRECTION_RTL {
                         content_left + content_width - width - start_inset
                     } else {
                         content_left + start_inset
                     } + owner_space_offset_x;
+                    if use_static_cb_compat && direct_owner_has_horizontal_decoration {
+                        x += content_left;
+                    }
                     n.layout.unrounded_layout.location.x = x;
                     n.layout.final_layout.location.x = x;
                 } else if n.layout.direction == YG_DIRECTION_RTL
@@ -1811,26 +1836,36 @@ pub extern "C" fn YGNodeCalculateLayout(
                     n.layout.final_layout.location.x = x;
                 } else if use_static_cb_compat && left.is_some() {
                     let left_inset = left.unwrap_or(0.0);
-                    let x = content_left + left_inset + owner_space_offset_x;
+                    let mut x = content_left + left_inset + owner_space_offset_x;
+                    if direct_owner_has_horizontal_decoration {
+                        x += content_left;
+                    }
                     n.layout.unrounded_layout.location.x = x;
                     n.layout.final_layout.location.x = x;
                 } else if use_static_cb_compat && end.is_some() {
                     let end_inset = end.unwrap_or(0.0);
-                    let x = if n.layout.direction == YG_DIRECTION_RTL {
+                    let mut x = if n.layout.direction == YG_DIRECTION_RTL {
                         content_left + end_inset
                     } else {
                         content_left + content_width - width - end_inset
                     } + owner_space_offset_x;
+                    if direct_owner_has_horizontal_decoration {
+                        x += content_left;
+                    }
                     n.layout.unrounded_layout.location.x = x;
                     n.layout.final_layout.location.x = x;
                 } else if use_static_cb_compat && right.is_some() {
                     let right_inset = right.unwrap_or(0.0);
-                    let x = content_left + content_width - width - right_inset + owner_space_offset_x;
+                    let mut x = content_left + content_width - width - right_inset + owner_space_offset_x;
+                    if direct_owner_has_horizontal_decoration {
+                        x += content_left;
+                    }
                     n.layout.unrounded_layout.location.x = x;
                     n.layout.final_layout.location.x = x;
                 } else if !has_horizontal_non_auto {
                     let (align_origin_x, align_width, axis_offset_x) = if use_static_cb_compat
                         && use_containing_for_auto_axes
+                        && !prefer_direct_owner_auto_x
                     {
                         (content_left, content_width, owner_space_offset_x)
                     } else if use_static_cb_compat {
@@ -1876,6 +1911,7 @@ pub extern "C" fn YGNodeCalculateLayout(
                     let (align_origin_y, align_height, axis_offset_y) = if use_static_cb_compat
                         && use_containing_for_auto_axes
                         && use_containing_for_auto_y
+                        && !prefer_direct_owner_auto_y
                     {
                         (content_top, content_height, owner_space_offset_y)
                     } else if use_static_cb_compat {
