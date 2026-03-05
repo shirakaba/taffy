@@ -162,6 +162,7 @@ impl Default for YGLayout {
 struct YGNode {
     style: Style,
     display_mode: i32,
+    position_type_mode: i32,
     owner: *mut YGNode,
     children: Vec<*mut YGNode>,
     config: *mut YGConfig,
@@ -944,8 +945,10 @@ fn build_taffy_tree(
         let n = &mut *node;
         let direction = resolve_direction(n.direction, owner_direction);
         let mut style = n.style.clone();
-        let flex_direction_before_resolution = style.flex_direction;
         style.inset = resolve_inset_rect(&n.position_edges, direction);
+        if n.position_type_mode == YG_POSITION_TYPE_STATIC {
+            style.inset = Rect::auto();
+        }
         style.margin = resolve_margin_rect(&n.margin_edges, direction);
         style.padding = resolve_lp_rect(&n.padding_edges, direction);
         style.border = resolve_lp_rect(&n.border_edges, direction);
@@ -1146,6 +1149,7 @@ pub extern "C" fn YGNodeNewWithConfig(config: *const YGConfig) -> *mut YGNode {
     Box::into_raw(Box::new(YGNode {
         style,
         display_mode: YG_DISPLAY_FLEX,
+        position_type_mode: YG_POSITION_TYPE_RELATIVE,
         owner: ptr::null_mut(),
         children: Vec::new(),
         config,
@@ -1175,6 +1179,7 @@ unsafe fn node_clone_shallow(node: *const YGNode) -> *mut YGNode {
     Box::into_raw(Box::new(YGNode {
         style: n.style.clone(),
         display_mode: n.display_mode,
+        position_type_mode: n.position_type_mode,
         owner: ptr::null_mut(),
         children: n.children.clone(),
         config: n.config,
@@ -1264,6 +1269,7 @@ pub extern "C" fn YGNodeReset(node: *mut YGNode) {
             *n = YGNode {
                 style: default_style(use_web_defaults),
                 display_mode: YG_DISPLAY_FLEX,
+                position_type_mode: YG_POSITION_TYPE_RELATIVE,
                 owner: ptr::null_mut(),
                 children: Vec::new(),
                 config: n.config,
@@ -1944,6 +1950,7 @@ pub extern "C" fn YGNodeCopyStyle(dst_node: *mut YGNode, src_node: *const YGNode
         if let (Some(dst), Some(src)) = (dst_node.as_mut(), src_node.as_ref()) {
             dst.style = src.style.clone();
             dst.display_mode = src.display_mode;
+            dst.position_type_mode = src.position_type_mode;
             dst.flex = src.flex;
             dst.has_flex_grow = src.has_flex_grow;
             dst.has_flex_shrink = src.has_flex_shrink;
@@ -2109,6 +2116,7 @@ pub extern "C" fn YGNodeStyleGetAlignSelf(node: *const YGNode) -> i32 {
 pub extern "C" fn YGNodeStyleSetPositionType(node: *mut YGNode, position_type: i32) {
     unsafe {
         if let Some(n) = node.as_mut() {
+            n.position_type_mode = position_type;
             n.style.position = map_position_type(position_type);
             mark_dirty(node);
         }
@@ -2119,7 +2127,7 @@ pub extern "C" fn YGNodeStyleSetPositionType(node: *mut YGNode, position_type: i
 pub extern "C" fn YGNodeStyleGetPositionType(node: *const YGNode) -> i32 {
     unsafe {
         node.as_ref()
-            .map(|n| unmap_position_type(n.style.position))
+            .map(|n| n.position_type_mode)
             .unwrap_or(YG_POSITION_TYPE_RELATIVE)
     }
 }
