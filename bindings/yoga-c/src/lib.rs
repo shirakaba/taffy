@@ -1749,7 +1749,13 @@ pub extern "C" fn YGNodeCalculateLayout(
                 let margin_end = n.margin_edges.get_exact(YG_EDGE_END);
                 let margin_left = n.margin_edges.get_exact(YG_EDGE_LEFT);
                 let margin_right = n.margin_edges.get_exact(YG_EDGE_RIGHT);
-                if margin_start.is_some() || margin_end.is_some() || margin_left.is_some() || margin_right.is_some() {
+                let has_horizontal_margin = margin_start.is_some()
+                    || margin_end.is_some()
+                    || margin_left.is_some()
+                    || margin_right.is_some();
+                if has_horizontal_margin
+                    && owner.position_type_mode != YG_POSITION_TYPE_STATIC
+                {
                     continue;
                 }
 
@@ -1763,7 +1769,10 @@ pub extern "C" fn YGNodeCalculateLayout(
                     continue;
                 }
 
-                let mirrored_x = owner_width - x - width;
+                let mut mirrored_x = owner_width - x - width;
+                if has_horizontal_margin && owner.position_type_mode == YG_POSITION_TYPE_STATIC {
+                    mirrored_x += n.layout.final_layout.margin.left - n.layout.final_layout.margin.right;
+                }
                 n.layout.unrounded_layout.location.x = mirrored_x;
                 n.layout.final_layout.location.x = mirrored_x;
             }
@@ -1806,10 +1815,11 @@ pub extern "C" fn YGNodeCalculateLayout(
                 let owner_margin_end = direct_owner.margin_edges.get_exact(YG_EDGE_END);
                 let owner_margin_left = direct_owner.margin_edges.get_exact(YG_EDGE_LEFT);
                 let owner_margin_right = direct_owner.margin_edges.get_exact(YG_EDGE_RIGHT);
-                if owner_margin_start.is_some()
+                if (owner_margin_start.is_some()
                     || owner_margin_end.is_some()
                     || owner_margin_left.is_some()
-                    || owner_margin_right.is_some()
+                    || owner_margin_right.is_some())
+                    && owner_parent.position_type_mode != YG_POSITION_TYPE_STATIC
                 {
                     continue;
                 }
