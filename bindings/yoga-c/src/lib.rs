@@ -1450,6 +1450,11 @@ pub extern "C" fn YGNodeCalculateLayout(
             }
         }
 
+        let pre_mirror_globals: Vec<(*mut YGNode, (f32, f32))> = mapping
+            .iter()
+            .map(|(node_ptr, _id)| unsafe { (*node_ptr, node_global_location(*node_ptr)) })
+            .collect();
+
         for (node_ptr, _id) in mapping.iter().copied() {
             unsafe {
                 let n = &mut *node_ptr;
@@ -1753,11 +1758,6 @@ pub extern "C" fn YGNodeCalculateLayout(
                     || margin_end.is_some()
                     || margin_left.is_some()
                     || margin_right.is_some();
-                if has_horizontal_margin
-                    && owner.position_type_mode != YG_POSITION_TYPE_STATIC
-                {
-                    continue;
-                }
 
                 let owner_width = owner.layout.unrounded_layout.size.width;
                 let width = n.layout.unrounded_layout.size.width;
@@ -1770,7 +1770,7 @@ pub extern "C" fn YGNodeCalculateLayout(
                 }
 
                 let mut mirrored_x = owner_width - x - width;
-                if has_horizontal_margin && owner.position_type_mode == YG_POSITION_TYPE_STATIC {
+                if has_horizontal_margin {
                     mirrored_x += n.layout.final_layout.margin.left - n.layout.final_layout.margin.right;
                 }
                 n.layout.unrounded_layout.location.x = mirrored_x;
@@ -1828,14 +1828,18 @@ pub extern "C" fn YGNodeCalculateLayout(
                 if containing_ptr.is_null() || containing_ptr == n.owner {
                     continue;
                 }
-                let (owner_global_x, _) = node_global_location(n.owner);
-                let (containing_global_x, _) = node_global_location(containing_ptr);
-                let delta_x = containing_global_x - owner_global_x;
-                if delta_x.abs() <= 0.0001 {
+                let pre_owner_global_x = pre_mirror_globals
+                    .iter()
+                    .find(|(p, _)| *p == n.owner)
+                    .map(|(_, pos)| pos.0)
+                    .unwrap_or_else(|| node_global_location(n.owner).0);
+                let current_owner_global_x = node_global_location(n.owner).0;
+                let owner_shift_x = pre_owner_global_x - current_owner_global_x;
+                if owner_shift_x.abs() <= 0.0001 {
                     continue;
                 }
-                n.layout.unrounded_layout.location.x += delta_x;
-                n.layout.final_layout.location.x += delta_x;
+                n.layout.unrounded_layout.location.x += owner_shift_x;
+                n.layout.final_layout.location.x += owner_shift_x;
             }
         }
     }));
