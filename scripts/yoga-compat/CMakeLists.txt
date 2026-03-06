@@ -32,6 +32,7 @@ target_include_directories(yogacore INTERFACE "${TAFFY_YOGA_ROOT}")
 file(GLOB_RECURSE SOURCES CONFIGURE_DEPENDS
   "${TAFFY_YOGA_ROOT}/tests/generated/*.cpp")
 list(APPEND SOURCES "${TAFFY_COMPAT_CPP}")
+list(APPEND SOURCES "${CMAKE_CURRENT_LIST_DIR}/AdversarialCompatTests.cpp")
 
 add_executable(yogatests ${SOURCES})
 target_link_libraries(yogatests yogacore GTest::gtest_main)
