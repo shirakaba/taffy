@@ -1017,17 +1017,6 @@ fn build_taffy_tree(
         style.flex_grow = resolve_flex_grow(n);
         style.flex_shrink = resolve_flex_shrink(n);
         style = resolve_flex_basis(n, style);
-        if n.display_mode == YG_DISPLAY_GRID
-            && (style.overflow.x == Overflow::Scroll || style.overflow.y == Overflow::Scroll)
-        {
-            // Yoga's grid+scroll behavior does not stretch auto-sized grid items by default.
-            if style.justify_items.is_none() {
-                style.justify_items = Some(AlignItems::Start);
-            }
-            if style.align_items.is_none() {
-                style.align_items = Some(AlignItems::Start);
-            }
-        }
         n.layout.direction = direction;
 
         let mut child_ids = Vec::with_capacity(n.children.len());
