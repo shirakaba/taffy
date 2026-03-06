@@ -2147,7 +2147,7 @@ pub extern "C" fn YGNodeCalculateLayout(
                     })
                     .sum();
                 let overflow = total_outer_width - owner_width;
-                if overflow <= 0.0001 {
+                if overflow <= 0.0 {
                     continue;
                 }
 
@@ -2342,7 +2342,7 @@ pub extern "C" fn YGNodeCalculateLayout(
                     continue;
                 }
                 let basis_delta = containing_width - owner_width;
-                if basis_delta.abs() <= 0.0001 {
+                if basis_delta == 0.0 {
                     continue;
                 }
 
@@ -2355,7 +2355,7 @@ pub extern "C" fn YGNodeCalculateLayout(
                         }
                     }
                 }
-                if percent_adjust.abs() <= 0.0001 {
+                if percent_adjust == 0.0 {
                     continue;
                 }
                 n.layout.unrounded_layout.location.x += percent_adjust;
@@ -2532,13 +2532,13 @@ pub extern "C" fn YGNodeCalculateLayout(
                 let owner_shift_x = pre_owner_global_x - current_owner_global_x;
                 let owner_shift_y = pre_owner_global_y - current_owner_global_y;
                 if child_has_horizontal_inset || (child_has_any_percent && !suppress_percent_owner_shift_x) {
-                    if owner_shift_x.abs() > 0.0001 {
+                    if owner_shift_x != 0.0 {
                         n.layout.unrounded_layout.location.x += owner_shift_x;
                         n.layout.final_layout.location.x += owner_shift_x;
                     }
                 }
                 if child_has_vertical_inset || (child_has_any_percent && !suppress_percent_owner_shift_y) {
-                    if owner_shift_y.abs() > 0.0001 {
+                    if owner_shift_y != 0.0 {
                         n.layout.unrounded_layout.location.y += owner_shift_y;
                         n.layout.final_layout.location.y += owner_shift_y;
                     }
