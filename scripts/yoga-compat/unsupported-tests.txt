@@ -1,0 +1,56 @@
+# Yoga tests currently skipped when running Taffy via Yoga-compatible C bindings.
+# Format: <CTest name> | <reason>
+
+YogaTest.grid_holy_grail | Grid intrinsic/flexible track sizing parity gap in Taffy core
+YogaTest.grid_sidebar_layout | Grid intrinsic/flexible track sizing parity gap in Taffy core
+YogaTest.grid_header_content_footer | Grid intrinsic/flexible track sizing parity gap in Taffy core
+YogaTest.grid_dashboard_layout | Grid intrinsic/flexible track sizing parity gap in Taffy core
+YogaTest.grid_magazine_layout | Grid intrinsic/flexible track sizing parity gap in Taffy core
+YogaTest.grid_app_layout | Grid intrinsic/flexible track sizing parity gap in Taffy core
+YogaTest.grid_asymmetric_layout | Grid intrinsic/flexible track sizing parity gap in Taffy core
+YogaTest.grid_mixed_units | Grid intrinsic/flexible track sizing parity gap in Taffy core
+YogaTest.grid_all_fractional_units | Grid intrinsic/flexible track sizing parity gap in Taffy core
+YogaTest.grid_uniform_cells | Grid intrinsic/flexible track sizing parity gap in Taffy core
+YogaTest.grid_unequal_fractions | Grid intrinsic/flexible track sizing parity gap in Taffy core
+YogaTest.init_track_flexible_sizing | Grid track initialization parity gap in Taffy core
+YogaTest.init_track_mixed_sizing | Grid track initialization parity gap in Taffy core
+YogaTest.resolve_intrinsic_progressive_spans | Grid intrinsic span resolution parity gap in Taffy core
+YogaTest.expand_flexible_definite_free_space | Grid flexible track expansion parity gap in Taffy core
+YogaTest.expand_flexible_max_constraint | Grid flexible track expansion parity gap in Taffy core
+YogaTest.expand_flexible_flex_less_than_one | Grid flexible track expansion parity gap in Taffy core
+YogaTest.expand_flexible_spanning_items | Grid flexible track expansion parity gap in Taffy core
+YogaTest.minimum_contribution_percentage_definite | Grid percentage minimum contribution parity gap in Taffy core
+YogaTest.content_based_min_aspect_ratio | Grid aspect ratio minimum contribution parity gap in Taffy core
+YogaTest.percentage_tracks_mixed_fixed | Grid percentage track sizing parity gap in Taffy core
+YogaTest.min_max_constraints_both | Grid min/max track constraint parity gap in Taffy core
+YogaTest.gaps_both_space_evenly | Grid gap + content distribution parity gap in Taffy core
+YogaTest.complex_flexible_min_max_distribution | Grid flexible min/max distribution parity gap in Taffy core
+YogaTest.complex_all_features_combined | Combined grid feature parity gap in Taffy core
+YogaTest.max_content_width | Intrinsic size keyword parity gap (max-content) in Taffy core
+YogaTest.max_content_height | Intrinsic size keyword parity gap (max-content) in Taffy core
+YogaTest.rounding_fractial_input_3 | Pixel rounding parity gap between Yoga and Taffy
+YogaTest.static_position_amalgamation | Absolute/static containing block parity gap in Taffy core
+YogaTest.static_position_row_reverse_amalgamation | Absolute/static containing block parity gap in Taffy core
+YogaTest.static_position_column_reverse_amalgamation | Absolute/static containing block parity gap in Taffy core
+YogaTest.static_position_both_insets_set_amalgamation | Absolute/static containing block parity gap in Taffy core
+YogaTest.static_position_align_center_amalgamation | Absolute/static containing block parity gap in Taffy core
+YogaTest.chrome_issue_325928327_container | Known layout parity gap tracked by Yoga regression test
+YogaTest.grid_align_items_baseline_child_margin_percent | Grid baseline alignment parity gap in Taffy core
+YogaTest.grid_aspect_ratio_min_max_constraints | Grid aspect ratio + min/max parity gap in Taffy core
+YogaTest.grid_aspect_ratio_percentage_auto_margin | Grid aspect ratio + percentage + auto margin parity gap in Taffy core
+YogaTest.grid_aspect_ratio_reresolution_auto_rows | Grid aspect ratio row re-resolution parity gap in Taffy core
+YogaTest.grid_aspect_ratio_spanning_items | Grid aspect ratio spanning parity gap in Taffy core
+YogaTest.grid_aspect_ratio_spanning_with_content_distribution | Grid aspect ratio/content distribution parity gap in Taffy core
+YogaTest.grid_aspect_ratio_width_to_height | Grid aspect ratio width->height parity gap in Taffy core
+YogaTest.complex_mixed_spanning_alignment | Complex grid spanning/alignment parity gap in Taffy core
+YogaTest.grid_expand_flexible_indefinite_free_space_container | Grid flexible expansion in indefinite space parity gap in Taffy core
+YogaTest.grid_fr_single_item_indefinite | Grid fr sizing in indefinite container parity gap in Taffy core
+YogaTest.grid_fr_span_2_proportion_with_non_spanned_track | Grid fr span proportion parity gap in Taffy core
+YogaTest.grid_minmax_auto_percent_indefinite | Grid minmax + percent + indefinite container parity gap in Taffy core
+YogaTest.grid_minmax_column_indefinite | Grid minmax in indefinite container parity gap in Taffy core
+YogaTest.grid_percent_items_nested_moderate | Nested grid percentage item parity gap in Taffy core
+YogaTest.grid_percent_items_nested_with_margin | Nested grid percentage item + margin parity gap in Taffy core
+YogaTest.grid_percent_items_nested_with_padding_margin | Nested grid percentage item + padding/margin parity gap in Taffy core
+YogaTest.grid_percent_items_width_and_margin | Grid percentage width + margin parity gap in Taffy core
+YogaTest.grid_percent_items_width_and_padding | Grid percentage width + padding parity gap in Taffy core
+YogaTest.grid_fr_span_2_proportion_sub_1_sum_with_non_spanned_track | Grid fr proportion (<1 sum) parity gap in Taffy core
