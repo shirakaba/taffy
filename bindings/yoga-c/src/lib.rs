@@ -284,6 +284,7 @@ fn config_default() -> *mut YGConfig {
 
 fn default_style(use_web_defaults: bool) -> Style {
     let mut style = Style::DEFAULT;
+    style.justify_content = Some(JustifyContent::FlexStart);
     if !use_web_defaults {
         style.flex_direction = FlexDirection::Column;
         style.align_content = Some(AlignContent::FlexStart);
@@ -1016,6 +1017,17 @@ fn build_taffy_tree(
         style.flex_grow = resolve_flex_grow(n);
         style.flex_shrink = resolve_flex_shrink(n);
         style = resolve_flex_basis(n, style);
+        if n.display_mode == YG_DISPLAY_GRID
+            && (style.overflow.x == Overflow::Scroll || style.overflow.y == Overflow::Scroll)
+        {
+            // Yoga's grid+scroll behavior does not stretch auto-sized grid items by default.
+            if style.justify_items.is_none() {
+                style.justify_items = Some(AlignItems::Start);
+            }
+            if style.align_items.is_none() {
+                style.align_items = Some(AlignItems::Start);
+            }
+        }
         n.layout.direction = direction;
 
         let mut child_ids = Vec::with_capacity(n.children.len());
@@ -1913,9 +1925,22 @@ pub extern "C" fn YGNodeCalculateLayout(
                     && right.is_some()
                 {
                     // Yoga favors the physical right inset for this RTL left+right absolute case.
-                    let x =
+                    let mut x =
                         abs_origin_left + abs_available_width - width - right.unwrap_or(0.0) - n.layout.final_layout.margin.right
                             + owner_space_offset_x;
+                    if use_static_cb_compat && direct_owner_has_horizontal_decoration {
+                        let pre_owner_global_x = pre_mirror_globals
+                            .iter()
+                            .find(|(p, _)| *p == n.owner)
+                            .map(|(_, pos)| pos.0)
+                            .unwrap_or(direct_owner_global_x);
+                        let pre_containing_global_x = pre_mirror_globals
+                            .iter()
+                            .find(|(p, _)| *p == containing_ptr)
+                            .map(|(_, pos)| pos.0)
+                            .unwrap_or(containing_global_x);
+                        x += pre_owner_global_x - pre_containing_global_x;
+                    }
                     n.layout.unrounded_layout.location.x = x;
                     n.layout.final_layout.location.x = x;
                 } else if use_static_cb_compat && left.is_some() {
